@@ -2,11 +2,10 @@
 
 ## Reporting
 
-Do not post exploits, secrets or real VPN details in public issues. GitHub private
-vulnerability reporting has **not been enabled or verified by this preparation**.
-Until it is enabled, ask the maintainer to establish a private reporting channel
-without disclosing sensitive details. No private contact address or response-time
-commitment is published. There has been no independent security audit.
+Do not post exploits, secrets or real VPN details in public issues. Report
+vulnerabilities privately through GitHub:
+[Security → Report a vulnerability](https://github.com/luizmz94/openfortidesk/security/advisories/new).
+No response-time commitment is made. There has been no independent security audit.
 
 Include version/build, macOS, architecture and a reproduction with fictitious
 profiles. Remove users, gateways, cookies, passwords, tokens and SAML URLs from
