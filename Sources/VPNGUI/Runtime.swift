@@ -213,6 +213,9 @@ final class VPNManager: ObservableObject {
     private var pendingSAML: [UUID: Connection] = [:]
     /// Connection of a running cookie attempt, needed for its single SAML fallback.
     private var cookieAttempts: [UUID: Connection] = [:]
+    /// Refused cookies the Keychain would not delete (e.g. items written by the old VPNGUI.app):
+    /// never offered again until a new capture overwrites them.
+    private var refusedCookies: Set<UUID> = []
     /// Profiles of running sessions, to interpret their events.
     private var running: [UUID: Connection] = [:]
     /// Helper token → session.
@@ -252,6 +255,7 @@ final class VPNManager: ObservableObject {
         queueOrStart(session, connection: connection, password: password)
     }
     private func savedCookie(for connection: Connection, session: Session) -> String? {
+        guard !refusedCookies.contains(connection.id) else { return nil }
         switch cookies.lookup(connection) {
         case .cookie(let cookie): return cookie
         case .none: return nil
@@ -432,6 +436,7 @@ final class VPNManager: ObservableObject {
             if let candidate = session.cookieCandidate, !session.cookieConflict {
                 do {
                     try cookies.save(candidate, for: connection)
+                    refusedCookies.remove(connection.id)
                     session.log("Sessão SAML guardada no Keychain por até 30 minutos para a próxima conexão. O gateway pode recusá-la antes disso.")
                 } catch {
                     session.log("Não foi possível guardar a sessão SAML no Keychain; a próxima conexão usará o navegador.")
@@ -508,17 +513,23 @@ final class VPNManager: ObservableObject {
         guard session.cookieMode == .reuse, let attempt = cookieAttempts.removeValue(forKey: session.id) else { return nil }
         guard !session.tunnelUp, !session.wantsDisconnect, exit != nil else { return nil }
         if session.cookieRejected && !session.cookieTransportFailure {
-            try? cookies.delete(session.id)
+            discardCookie(session)
             session.log("O gateway recusou a sessão SAML salva (expirada ou encerrada). Ela foi descartada; iniciando um login SAML no navegador.")
             return attempt
         }
         if session.reachedGateway && !session.cookieTransportFailure {
-            try? cookies.delete(session.id)
+            discardCookie(session)
             session.log("A sessão SAML salva não foi confirmada pelo gateway e foi descartada. A próxima conexão usará o navegador.")
         } else {
             session.log("A tentativa com a sessão SAML salva falhou por rede ou TLS; isso não indica sessão inválida.")
         }
         return nil
+    }
+    private func discardCookie(_ session: Session) {
+        do { try cookies.delete(session.id) } catch {
+            refusedCookies.insert(session.id)
+            session.log("Não foi possível apagar a sessão SAML recusada do Keychain; ela não será usada de novo enquanto o app estiver aberto. (\(error.localizedDescription))")
+        }
     }
     func retryFailed(_ id: UUID, message: String) {
         let session = session(id)

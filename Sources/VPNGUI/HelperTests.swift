@@ -552,6 +552,25 @@ enum HelperTests {
             try require(spin(10) { raw.received.flatMap(\.events).contains { $0.kind == .exited(code: 0) } }, "Código de saída não entregue")
         }
 
+        test("Sessões: início logo após a saída, antes da confirmação do evento final, não é duplicata (fallback SAML)") {
+            guard let fixture = sharedFixture else { throw TestSupport.Failure("Fixture indisponível") }
+            let raw = RawClient(endpoint: fixture.listener.endpoint)
+            defer { raw.releaseAcks(); raw.invalidate() }
+            _ = raw.send(.hello(HelloRequest(appVersion: HelperConstants.fullVersion)))
+            raw.holdTerminalAcks = true
+            let id = UUID()
+            guard case .started? = raw.send(.start(connectRequest(id, host: "exit.invalid"))) else { throw TestSupport.Failure("Não iniciou") }
+            try require(spin(10) { raw.received.flatMap(\.events).contains { $0.kind == .exited(code: 0) } }, "Saída não entregue")
+            // The app reacts to the exit before acknowledging it, exactly like the cookie fallback.
+            guard case .started(let token, _)? = raw.send(.start(connectRequest(id))) else { throw TestSupport.Failure("Sessão encerrada bloqueou o novo início") }
+            guard case .failure(let duplicate)? = raw.send(.start(connectRequest(id))), duplicate.code == .duplicateSession else {
+                throw TestSupport.Failure("Duplicata da sessão nova aceita")
+            }
+            raw.releaseAcks()
+            _ = raw.send(.stop(token: token))
+            try require(spin(10) { fixture.core.sessionCount == 0 }, "Sessão não terminou")
+        }
+
         test("Eventos: ordem estrita, buffer limitado e descarte contabilizado com cliente lento") {
             var batches: [EventBatch] = []
             var acks: [() -> Void] = []

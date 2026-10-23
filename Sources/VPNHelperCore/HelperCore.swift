@@ -196,13 +196,15 @@ public final class HelperCore {
         let plan: LaunchPlan
         do { plan = try request.validatedPlan(capabilities: runtime.manifest.capabilities) }
         catch { return .failure(Self.wrap(error)) }
-        if sessions.values.contains(where: { $0.uid == client.uid && $0.connectionID == request.connectionID }) {
+        // A finished runner (supervisor reaped and cleaned up) only waits for the delivery of its
+        // final events; it must not block the next start, e.g. the SAML fallback after a cookie.
+        if sessions.values.contains(where: { !$0.finished && $0.uid == client.uid && $0.connectionID == request.connectionID }) {
             return .failure(HelperFailure(.duplicateSession, "Esta conexão já tem uma sessão ativa ou encerrando."))
         }
         if registry.stale(excluding: Set(sessions.keys)).contains(where: { $0.uid == client.uid && $0.connectionID == request.connectionID }) {
             return .failure(HelperFailure(.busy, "A sessão anterior desta conexão ainda está encerrando. Aguarde a limpeza e tente novamente."))
         }
-        guard sessions.values.filter({ $0.ownerID == client.id }).count < HelperConstants.maximumSessionsPerClient else {
+        guard sessions.values.filter({ !$0.finished && $0.ownerID == client.id }).count < HelperConstants.maximumSessionsPerClient else {
             return .failure(HelperFailure(.limitReached, "Limite de conexões simultâneas atingido."))
         }
         let supervisor: String

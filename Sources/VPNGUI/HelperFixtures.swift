@@ -196,14 +196,24 @@ final class RawClient {
     let connection: NSXPCConnection
     private let lock = NSLock()
     private var batches: [EventBatch] = []
+    private var heldAcks: [() -> Void] = []
+    /// When set, the acknowledgement of a batch with a terminal event is held until released.
+    var holdTerminalAcks: Bool { get { lock.withLock { _hold } } set { lock.withLock { _hold = newValue } } }
+    private var _hold = false
     init(endpoint: NSXPCListenerEndpoint, requirement: String = HelperTests.ownRequirement) {
         connection = NSXPCConnection(listenerEndpoint: endpoint)
         connection.setCodeSigningRequirement(requirement)
         connection.remoteObjectInterface = HelperInterfaces.helper()
         connection.exportedInterface = HelperInterfaces.client()
-        connection.exportedObject = BatchCollector { [weak self] batch in
-            guard let self else { return }
-            self.lock.withLock { self.batches.append(batch) }
+        connection.exportedObject = BatchCollector { [weak self] batch, reply in
+            guard let self else { return reply() }
+            let hold = self.lock.withLock {
+                self.batches.append(batch)
+                guard self._hold, batch.events.contains(where: \.isTerminal) else { return false }
+                self.heldAcks.append(reply)
+                return true
+            }
+            if !hold { reply() }
         }
         connection.resume()
     }
@@ -216,6 +226,7 @@ final class RawClient {
         return box.value
     }
     func send(_ request: HelperRequest) -> HelperResponse? { send(MessageCodec.encode(request)) }
+    func releaseAcks() { lock.withLock { let acks = heldAcks; heldAcks = []; _hold = false; return acks }.forEach { $0() } }
     func invalidate() { connection.invalidate() }
 }
 
@@ -229,11 +240,11 @@ final class ResponseBox: @unchecked Sendable {
 }
 
 final class BatchCollector: NSObject, VPNHelperClientXPC {
-    let handler: (EventBatch) -> Void
-    init(_ handler: @escaping (EventBatch) -> Void) { self.handler = handler }
+    let handler: (EventBatch, @escaping () -> Void) -> Void
+    init(_ handler: @escaping (EventBatch, @escaping () -> Void) -> Void) { self.handler = handler }
     func deliver(_ batch: Data, reply: @escaping () -> Void) {
-        if let decoded = try? MessageCodec.decode(EventBatch.self, from: batch, limit: HelperConstants.maximumBatchSize) { handler(decoded) }
-        reply()
+        guard let decoded = try? MessageCodec.decode(EventBatch.self, from: batch, limit: HelperConstants.maximumBatchSize) else { return reply() }
+        handler(decoded, reply)
     }
 }
 

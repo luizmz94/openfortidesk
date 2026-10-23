@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0-rc.2 — unreleased
+
+- Fix the SAML fallback after a refused saved session: the helper no longer rejects
+  the browser login as a duplicate while the previous attempt's final events are
+  still being acknowledged.
+- A refused saved session that the Keychain will not delete (for example one written
+  by VPNGUI.app) is no longer retried on every connection, and the failure is logged.
+
 ## 0.3.0-rc.1 — 2026-10-23
 
 - Rename the distributed bundle and visible product to OpenFortiDesk.
