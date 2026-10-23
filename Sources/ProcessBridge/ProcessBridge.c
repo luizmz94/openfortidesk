@@ -166,3 +166,10 @@ int vpn_reserve_port(int *port) {
     *port = ntohs(address.sin_port);
     return fd;
 }
+
+// Exported by libsystem_sandbox (part of libSystem); not in the public SDK headers.
+extern int sandbox_check(pid_t pid, const char *operation, int type, ...);
+
+int vpn_is_sandboxed(void) {
+    return sandbox_check(getpid(), NULL, 0) == 1;
+}

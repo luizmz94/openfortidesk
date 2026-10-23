@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.0-rc.3 — 2026-10-23
+
+- Fix `brew upgrade`, `reinstall` and `uninstall`, which always failed because
+  Homebrew 7 runs cask steps inside a sandbox that blocks the service registration
+  and the helper connection. Inside the sandbox the maintenance command now only
+  verifies, through libproc, that the app, its supervisors and the managed
+  openfortivpn are not running, and keeps the service registered for the upgraded
+  bundle.
+- The cask's VPNGUI.app migration requires the old service to be removed first, and
+  the caveats explain that Remover serviço must be used before `brew uninstall`.
+- The local checks run the maintenance command under Homebrew's sandbox profile.
+- rc.1 and rc.2 cannot upgrade by themselves; see the release notes for the manual
+  steps.
+
 ## 0.3.0-rc.2 — 2026-10-23
 
 - Fix the SAML fallback after a refused saved session: the helper no longer rejects

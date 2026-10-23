@@ -66,14 +66,31 @@ brew uninstall --cask luizmz94/openfortidesk/openfortidesk
 ```
 
 Upgrade/reinstall/uninstall call the installed app's restricted normal-user
-maintenance command **before** bundle removal. It requests normal quit, respects
-cancellation and waits for cleanup. The authenticated helper must prove global idle,
-block new starts and successfully unregister. Refusal, timeout, another user's
-session, old protocol or unregister error aborts the operation. Do not use `--force`
-and do not reopen the app during maintenance. This lifecycle still requires isolated
-VM validation before a stable release.
+maintenance command **before** bundle removal. Homebrew runs it inside its sandbox,
+where the app cannot reach the service registration or the helper. There it only
+checks, without contacting anything, that OpenFortiDesk, its supervisors and its
+openfortivpn are not running, and keeps the service registered: the upgraded bundle
+lands at the same path with the same identifiers and Team, so the registration stays
+valid. Before `brew upgrade`, quit the app with **Sair** (this disconnects its VPNs);
+otherwise brew stops and nothing is replaced.
 
-For manual migration from `/Applications/VPNGUI.app`, run `./scripts/install.sh`
+Before `brew uninstall`, open the app and use **Gerenciar… → Remover serviço**, then
+quit with **Sair**: the sandbox cannot remove the registration for you. Do not use
+`--force` and do not reopen the app during maintenance. Outside the sandbox (for
+example `./scripts/install.sh`), the same command requests normal quit, waits for
+cleanup, has the authenticated helper prove global idle and unregisters the service.
+This lifecycle still requires isolated VM validation before a stable release.
+
+Moving from rc.1 or rc.2: their installed maintenance command always fails inside the
+Homebrew sandbox, so `brew upgrade` stops. Use **Remover serviço** and **Sair** in the
+app, move `/Applications/OpenFortiDesk.app` to the Trash, then run
+`rm -rf "$(brew --caskroom)/openfortidesk"` and
+`brew install --cask luizmz94/openfortidesk/openfortidesk`, and activate the service
+again from the new app.
+
+When the cask finds `/Applications/VPNGUI.app`, it requires the old service to be
+removed first (checked with `launchctl print`): open VPNGUI, use **Remover serviço**,
+quit with **Sair** and run brew again. For manual migration, run `./scripts/install.sh`
 after building/signing/notarizing. The script stages and verifies the new bundle,
 backs up both possible installed names in Application Support/VPNGUI/Backups and
 requires cleanup/unregister before replacing either bundle. If an old helper does

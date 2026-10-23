@@ -176,7 +176,9 @@ struct VPNGUIApp: App {
     @StateObject private var menuBar: MenuBarCoordinator
     init() {
         if CommandLine.arguments.contains("--release-checks") { exit(ReleaseTests.run()) }
-        if CommandLine.arguments.contains(Maintenance.argument) { exit(Maintenance.run()) }
+        if CommandLine.arguments.contains(where: [Maintenance.argument, Maintenance.legacyMigrationArgument].contains) {
+            exit(Maintenance.run())
+        }
         signal(SIGPIPE, SIG_IGN) // A closed control socket returns EPIPE instead of terminating the app.
         if CommandLine.arguments.contains("--self-test") { exit(SelfTests.run()) }
         // One AppModel (and VPNManager) shared by the window and the menu bar.

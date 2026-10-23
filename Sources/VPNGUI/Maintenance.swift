@@ -1,18 +1,95 @@
 import AppKit
+import Darwin
 import ServiceManagement
+import ProcessBridge
 import VPNHelperShared
 
-/// A single fixed operation, run as the logged-in user. No shell, root execution,
-/// PID arguments, custom paths or helper commands. XPC uses the production trust policy.
+/// Fixed operations, run as the logged-in user. No shell, root execution, PID
+/// arguments, custom paths or helper commands. XPC uses the production trust policy.
 @MainActor
 enum Maintenance {
     static let argument = "--prepare-for-maintenance"
+    /// Used by the cask before it moves a legacy VPNGUI.app away. Read-only.
+    static let legacyMigrationArgument = "--prepare-for-legacy-migration"
+
+    static let quitAndRetry = "Quit OpenFortiDesk with Sair (this disconnects its VPNs), then run brew again."
+    static let removeLegacyService = """
+        The service of the old VPNGUI.app is still registered. Open VPNGUI, use Remover serviço \
+        in Gerenciar…, quit it with Sair, then run brew again.
+        """
+
     static func run() -> Int32 {
-        guard CommandLine.arguments == [CommandLine.arguments[0], argument], getuid() != 0,
-              case .trusted(let team) = CodeTrust.localPolicy() else {
-            fputs("Maintenance requires a signed app, a normal user and no extra arguments.\n", stderr)
-            return 1
+        guard CommandLine.arguments.count == 2, getuid() != 0 else { return usage() }
+        switch CommandLine.arguments[1] {
+        case argument: return restrictedEnvironment() ? restrictedCheck() : fullMaintenance()
+        case legacyMigrationArgument: return legacyMigrationCheck()
+        default: return usage()
         }
+    }
+
+    // MARK: Homebrew sandbox
+
+    /// Homebrew 7 runs cask `run` steps under sandbox-exec, which denies the
+    /// mach-lookup that SMAppService and XPC need: the registration then reads as
+    /// `.notFound` although this bundle ships the daemon plist.
+    static func restrictedEnvironment() -> Bool {
+        let plist = Bundle.main.bundleURL.appendingPathComponent("Contents/Library/LaunchDaemons/" + HelperConstants.plistName)
+        return vpn_is_sandboxed() == 1 && FileManager.default.fileExists(atPath: plist.path)
+            && DaemonRegistrar().status == .notFound
+    }
+
+    /// Nothing is quit, unregistered or contacted. The registration is kept: on
+    /// upgrade the new bundle lands at the same path with the same identifier and
+    /// Team, so it stays valid. Before `brew uninstall`, Remover serviço removes it.
+    static func restrictedCheck() -> Int32 {
+        let running = runningProductProcesses()
+        guard running.isEmpty else { return busy(running) }
+        return 0
+    }
+
+    /// The old bundle is moved away, so its registration would point at nothing.
+    /// `launchctl print` works inside the sandbox and outside it.
+    static func legacyMigrationCheck() -> Int32 {
+        let running = runningProductProcesses()
+        guard running.isEmpty else { return busy(running) }
+        return serviceIsAbsent() ? 0 : fail(removeLegacyService)
+    }
+
+    /// Product executables, found through libproc (no mach-lookup, no signals):
+    /// the app and its supervisor in OpenFortiDesk.app or VPNGUI.app, and the
+    /// supervisor copy and managed openfortivpn in the helper's state directory.
+    static func runningProductProcesses(excluding own: pid_t = getpid()) -> [(pid: pid_t, path: String)] {
+        let capacity = proc_listallpids(nil, 0)
+        guard capacity > 0 else { return [] }
+        var pids = [pid_t](repeating: 0, count: Int(capacity) + 64)
+        let count = pids.withUnsafeMutableBytes { proc_listallpids($0.baseAddress, Int32($0.count)) }
+        var found: [(pid: pid_t, path: String)] = []
+        var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        for pid in pids.prefix(max(0, Int(count))) where pid > 0 && pid != own {
+            // Unreadable entries are exiting processes or kernel tasks.
+            guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { continue }
+            let path = String(cString: buffer)
+            if isProductExecutable(path) { found.append((pid, path)) }
+        }
+        return found
+    }
+
+    static func isProductExecutable(_ path: String) -> Bool {
+        if path.hasPrefix(HelperConstants.stateDirectory + "/") { return true }
+        return ["OpenFortiDesk.app", "VPNGUI.app"].contains { bundle in
+            ["VPNGUI", "VPNSupervisor"].contains { path.hasSuffix("/" + bundle + "/Contents/MacOS/" + $0) }
+        }
+    }
+
+    private static func busy(_ running: [(pid: pid_t, path: String)]) -> Int32 {
+        let list = running.map { "  \($0.pid) \($0.path)" }.joined(separator: "\n")
+        return fail("OpenFortiDesk is still running:\n\(list)\n\(quitAndRetry) The bundle was preserved.")
+    }
+
+    // MARK: Full maintenance (outside the sandbox)
+
+    static func fullMaintenance() -> Int32 {
+        guard case .trusted(let team) = CodeTrust.localPolicy() else { return usage() }
         // Cocoa's normal quit request reaches applicationShouldTerminate: cancellation
         // and pending cleanup are respected. Never forceTerminate or signal a PID.
         let running = NSRunningApplication.runningApplications(withBundleIdentifier: HelperConstants.appIdentifier)
@@ -81,6 +158,9 @@ enum Maintenance {
             RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         }
         return condition()
+    }
+    private static func usage() -> Int32 {
+        fail("Maintenance requires a signed app, a normal user and no extra arguments.")
     }
     private static func fail(_ message: String) -> Int32 { fputs(message + "\n", stderr); return 1 }
 }

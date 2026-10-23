@@ -38,6 +38,15 @@ start gate remains held during unregister. Refusal, missing proof, protocol mism
 timeout or unregister error aborts bundle replacement. No root app scripts are run.
 An old helper without this operation must be removed through the old app first.
 
+Homebrew runs cask steps under sandbox-exec, which denies mach-lookup, Apple events
+and LaunchServices. Detected there (sandboxed, daemon plist present, registration
+unreadable), the command is read-only: it lists processes through libproc and refuses
+while the app, a supervisor or the managed openfortivpn runs. It never signals a
+process, contacts the helper or changes the registration, which is kept for the
+upgraded bundle at the same path. Uninstall therefore requires Remover serviço in the
+app first. The VPNGUI.app migration step requires the old service to be absent
+(`launchctl print`) before it moves the old bundle.
+
 ## Known limitations
 
 A direct SIGKILL of a supervisor can leave an orphaned openfortivpn. Do not use

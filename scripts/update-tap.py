@@ -46,8 +46,9 @@ def cask(version, digest):
 
   preflight_steps do
     if_path_exists "VPNGUI.app", base: :appdir do
+      # Homebrew runs this in its sandbox: read-only, requires the old service removed.
       run "OpenFortiDesk.app/Contents/MacOS/VPNGUI",
-          args:         ["--prepare-for-maintenance"],
+          args:         ["--prepare-for-legacy-migration"],
           base:         :staged_path,
           sudo:         false,
           must_succeed: true
@@ -57,6 +58,7 @@ def cask(version, digest):
     end
   end
 
+  # In Homebrew's sandbox: refuses while the app runs, keeps the registration.
   uninstall_preflight_steps do
     run "OpenFortiDesk.app/Contents/MacOS/VPNGUI",
         args:         ["--prepare-for-maintenance"],
@@ -67,10 +69,20 @@ def cask(version, digest):
 
   caveats <<~EOS
     First use: open OpenFortiDesk, activate its service, approve it in System
-    Settings and approve the protected openfortivpn runtime. Release candidate:
-    isolated root lifecycle integration is not yet validated. Profiles, Keychain
-    secrets and the protected runtime survive uninstall. Do not reopen the app
-    during an upgrade. See SECURITY.md before removing managed root files.
+    Settings and approve the protected openfortivpn runtime.
+
+    Before brew upgrade: quit OpenFortiDesk with Sair (this disconnects its
+    VPNs). The service registration is kept for the upgraded app.
+
+    Before brew uninstall: open the app, use Gerenciar… > Remover serviço, then
+    quit with Sair. Homebrew's sandbox does not allow removing the registration.
+
+    Migrating from VPNGUI.app: remove its service first the same way.
+
+    Release candidate: isolated root lifecycle integration is not yet validated.
+    Profiles, Keychain secrets and the protected runtime survive uninstall. Do not
+    reopen the app during an upgrade. See SECURITY.md before removing managed root
+    files.
   EOS
 end
 ''' % (version, digest)

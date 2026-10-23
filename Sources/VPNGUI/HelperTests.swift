@@ -860,6 +860,74 @@ enum HelperTests {
             try require(spin(10) { fixture.core.sessionCount == 0 }, "Final cleanup did not finish")
         }
 
+        test("Homebrew sandbox: maintenance keeps the registration, sees running product processes without mach-lookup") {
+            for path in ["/Applications/OpenFortiDesk.app/Contents/MacOS/VPNGUI", "/x/VPNGUI.app/Contents/MacOS/VPNSupervisor",
+                         HelperConstants.stateDirectory + "/supervisor/VPNSupervisor-0", HelperConstants.stateDirectory + "/runtime/0/bin/openfortivpn"] {
+                try require(Maintenance.isProductExecutable(path), "Product process missed: \(path)")
+            }
+            for path in ["/Applications/OpenFortiDesk.app/Contents/MacOS/VPNHelper", "/x/VPNGUILocalChecks.app/Contents/MacOS/VPNGUI",
+                         "/opt/homebrew/bin/openfortivpn", HelperConstants.stateDirectory + "-other/x"] {
+                try require(!Maintenance.isProductExecutable(path), "Unrelated process matched: \(path)")
+            }
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("VPNGUI-sandbox-\(UUID())")
+            defer { try? FileManager.default.removeItem(at: root) }
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let (template, origin) = try HomebrewSandbox.template()
+            let profile = root.appendingPathComponent("cask.sb")
+            try HomebrewSandbox.profile(template).write(to: profile, atomically: true, encoding: .utf8)
+            guard let command = Bundle.main.executableURL?.path else { throw TestSupport.Failure("Runner executable") }
+            func sandboxed(_ argument: String) throws -> (status: Int32, errors: String) {
+                let process = Process()
+                let errors = Pipe()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
+                process.arguments = ["-f", profile.path, command, argument]
+                process.environment = ["PATH": "/usr/bin:/bin", "HOME": root.path]
+                process.standardOutput = FileHandle.nullDevice
+                process.standardError = errors
+                try process.run()
+                let output = errors.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                return (process.terminationStatus, String(decoding: output, as: UTF8.self))
+            }
+            // Real product processes cannot be hidden from a global scan: expect what the scan sees outside.
+            let real = Maintenance.runningProductProcesses()
+            let clean = try sandboxed(Maintenance.argument)
+            if real.isEmpty {
+                try require(clean.status == 0, "Absent app refused in the sandbox (\(origin)): \(clean.errors)")
+            } else {
+                try require(clean.status == 1 && real.allSatisfy { clean.errors.contains("\($0.pid) \($0.path)") },
+                            "Sandbox scan differs from the real one: \(clean.errors)")
+                print("NOTE: OpenFortiDesk is running on this Mac; the exit-0 case runs only when it is closed")
+            }
+            try require(!clean.errors.contains("signed app"), "Restricted mode not detected in the sandbox")
+            // Harmless stand-in at an app path: a copy of /bin/sleep, ended by this test.
+            let fakeURL = root.appendingPathComponent("OpenFortiDesk.app/Contents/MacOS/VPNGUI")
+            try FileManager.default.createDirectory(at: fakeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.copyItem(atPath: "/bin/sleep", toPath: fakeURL.path)
+            // A copied platform binary is killed at exec; an ad hoc signature lets it run.
+            let sign = Process()
+            sign.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+            sign.arguments = ["--force", "--sign", "-", fakeURL.path]
+            sign.standardOutput = FileHandle.nullDevice
+            sign.standardError = FileHandle.nullDevice
+            try sign.run()
+            sign.waitUntilExit()
+            try require(sign.terminationStatus == 0, "Stand-in not signed")
+            let fake = Process()
+            fake.executableURL = fakeURL
+            fake.arguments = ["60"]
+            try fake.run()
+            defer { if fake.isRunning { fake.terminate() }; fake.waitUntilExit() }
+            _ = spin(0.5) { false }
+            try require(fake.isRunning && Maintenance.runningProductProcesses().contains { $0.pid == fake.processIdentifier }, "Stand-in not running")
+            for argument in [Maintenance.argument, Maintenance.legacyMigrationArgument] {
+                let busy = try sandboxed(argument)
+                try require(busy.status == 1 && busy.errors.contains("\(fake.processIdentifier) ")
+                            && busy.errors.contains("/OpenFortiDesk.app/Contents/MacOS/VPNGUI") && busy.errors.contains(Maintenance.quitAndRetry),
+                            "Running app not refused by \(argument): \(busy.errors)")
+            }
+        }
+
         return failures
     }
 }

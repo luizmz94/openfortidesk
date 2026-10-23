@@ -48,6 +48,9 @@ personal VPNs or the installed service for automated integration tests. Full
 install/upgrade/uninstall validation belongs in an isolated macOS VM, with distinct
 service identifiers and root state. Check cancellation, cleanup timeout, unregister
 failure, data retention and reinstall there before promoting a candidate to stable.
+Homebrew runs cask steps inside its sandbox; the local checks run the maintenance
+command under the profile of the installed Homebrew (or a fixed copy) with a harmless
+stand-in process, never against the installed app or service.
 
 For future submission to homebrew/cask, satisfy the current official acceptance,
 public-interest, platform, security, verifiable-download and livecheck policies.

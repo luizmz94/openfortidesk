@@ -33,3 +33,7 @@ int vpn_process_start_time(pid_t pid, uint64_t *seconds, uint64_t *microseconds)
 /// Local checks only: input 0 chooses an ephemeral loopback port; a positive input
 /// probes that exact port with the client's SO_REUSEADDR semantics.
 int vpn_reserve_port(int *port);
+
+/// 1 when this process runs inside a Seatbelt sandbox (for example Homebrew's
+/// sandbox-exec profile for cask steps), 0 otherwise. Read-only system query.
+int vpn_is_sandboxed(void);

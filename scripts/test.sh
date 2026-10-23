@@ -18,6 +18,9 @@ cp "$out/OpenFortiDesk.app/Contents/MacOS/VPNGUI" "$runner/Contents/MacOS/VPNGUI
 cp "$out/OpenFortiDesk.app/Contents/MacOS/VPNSupervisor" "$runner/Contents/MacOS/VPNSupervisor"
 cp "$out/OpenFortiDesk.app/Contents/Info.plist" "$runner/Contents/Info.plist"
 cp -R "$out/OpenFortiDesk.app/Contents/Resources" "$runner/Contents/Resources"
+# The daemon plist (never registered: other identifier, no helper binary) lets the
+# Homebrew sandbox check exercise the same restricted-mode detection as the app.
+cp -R "$out/OpenFortiDesk.app/Contents/Library" "$runner/Contents/Library"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $runner_identifier" "$runner/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleName OpenFortiDesk Local Checks' "$runner/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName OpenFortiDesk Local Checks' "$runner/Contents/Info.plist"
