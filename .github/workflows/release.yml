@@ -76,6 +76,8 @@ jobs:
           security import "$p12" -k "$KEYCHAIN" -f pkcs12 -P "$P12_PASSWORD" -T /usr/bin/codesign > /dev/null
           rm -f "$p12"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$KEYCHAIN" > /dev/null
+          # codesign only finds identities in the search list; restored in the cleanup.
+          security list-keychains -d user -s "$KEYCHAIN" $(tr -d '"' < "$RUNNER_TEMP/keychains-before")
           xcrun notarytool store-credentials openfortidesk-ci --apple-id "$NOTARY_APPLE_ID" --team-id "$TEAM_ID" \
             --password "$NOTARY_PASSWORD" --keychain "$KEYCHAIN" > /dev/null
           identity=$(security find-identity -v -p codesigning "$KEYCHAIN" |
@@ -121,6 +123,9 @@ jobs:
       - name: Remove the temporary keychain
         if: always()
         run: |
+          if [ -f "$RUNNER_TEMP/keychains-before" ]; then
+            security list-keychains -d user -s $(tr -d '"' < "$RUNNER_TEMP/keychains-before")
+          fi
           security delete-keychain "$KEYCHAIN" 2> /dev/null || true
           rm -f "$RUNNER_TEMP/signing.p12"
           if [ -f "$RUNNER_TEMP/keychains-before" ]; then
