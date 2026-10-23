@@ -34,8 +34,8 @@ NOTARY_PROFILE=your-keychain-profile ./scripts/notarize.sh
 These are contributor inputs, not project credentials. PR checks run on GitHub-hosted
 macOS with read permissions and no secrets; they run the real suite, and
 graphical-session failures remain failures. Releases are built by the manually
-triggered `release` workflow on the maintainer's self-hosted Mac; its signing and
-notarization secrets exist only in the protected `release` environment.
+triggered `release` workflow on GitHub-hosted macOS; its signing and notarization
+secrets exist only in the `release` environment, limited to `main`.
 
 Keep PRs focused and describe the trigger, resulting behavior and checks performed.
 Changes to helper operations, XPC trust, runtime integrity, maintenance or persistence

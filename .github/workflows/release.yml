@@ -1,6 +1,6 @@
-# Builds, signs, notarizes and packages a release on the maintainer's self-hosted Mac and
-# uploads it as a draft GitHub release. Manual only (workflow_dispatch) and gated by the
-# `release` environment: pull requests never reach this runner or these secrets.
+# Builds, signs, notarizes and packages a release on a GitHub-hosted Mac and uploads it as
+# a draft GitHub release. Manual only (workflow_dispatch) and limited to main by the
+# `release` environment: pull requests never reach these secrets.
 # The draft is published by hand after review; the tap is updated with scripts/update-tap.py.
 name: release
 
@@ -26,7 +26,7 @@ defaults:
 jobs:
   release:
     if: github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, macOS, ARM64, openfortidesk]
+    runs-on: macos-26
     environment: release
     timeout-minutes: 60
     permissions:
@@ -44,7 +44,13 @@ jobs:
         with:
           persist-credentials: false
 
-      # The full graphical suite: the runner is a LaunchAgent in a logged-in session.
+      - name: Toolchain
+        run: |
+          swift --version
+          xcrun --show-sdk-version
+          brew install openfortivpn
+
+      # The full graphical suite: hosted macOS runners have a logged-in session.
       - name: Full suite
         run: ./scripts/test.sh
 
