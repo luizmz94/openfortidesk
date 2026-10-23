@@ -74,8 +74,9 @@ def cask(version, digest):
     Before brew upgrade: quit OpenFortiDesk with Sair (this disconnects its
     VPNs). The service registration is kept for the upgraded app.
 
-    Before brew uninstall: open the app, use Gerenciar… > Remover serviço, then
-    quit with Sair. Homebrew's sandbox does not allow removing the registration.
+    Before brew uninstall: open the app, use Configurações… > Serviço
+    privilegiado > Remover serviço, then quit with Sair. Homebrew's sandbox does
+    not allow removing the registration.
 
     Migrating from VPNGUI.app: remove its service first the same way.
 

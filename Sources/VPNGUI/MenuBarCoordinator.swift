@@ -40,31 +40,82 @@ enum MenuBarRowAction: Equatable {
 
 /// Observes the shared AppModel for the menu bar and routes actions to the model
 /// or to the main window. It keeps no connection state of its own.
+/// Tabs of the Configurações window.
+enum SettingsTab: String, CaseIterable, Identifiable, Hashable {
+    case general, updates, service, about
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .general: return "Geral"
+        case .updates: return "Atualizações"
+        case .service: return "Serviço privilegiado"
+        case .about: return "Sobre"
+        }
+    }
+    var subtitle: String {
+        switch self {
+        case .general: return "Barra de menus, Dock e abertura ao iniciar sessão"
+        case .updates: return "Verificação de novas versões no GitHub; a instalação é pelo Homebrew"
+        case .service: return "O componente do sistema que inicia o openfortivpn por você"
+        case .about: return "Versão, licença e links do projeto"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .general: return "gearshape"
+        case .updates: return "arrow.triangle.2.circlepath"
+        case .service: return "lock.shield"
+        case .about: return "info.circle"
+        }
+    }
+}
+
 @MainActor
 final class MenuBarCoordinator: ObservableObject {
     static let sceneID = "main"
+    static let settingsSceneID = "settings"
     static let windowIdentifier = NSUserInterfaceItemIdentifier("com.luiz.vpngui.main-window")
+    static let settingsWindowIdentifier = NSUserInterfaceItemIdentifier("com.luiz.vpngui.settings-window")
     static var isLocalChecks: Bool { Bundle.main.bundleIdentifier?.hasPrefix("com.luiz.vpngui.local-checks") == true }
 
     let model: AppModel
+    let preferences: AppPreferences
+    let updates: UpdateChecker
+    let loginItem: LoginItemController
     @Published var pendingSelection: UUID?
-    /// Opens the service sheet once the main window is visible.
-    @Published var pendingServiceSheet = false
+    /// Tab shown by the Configurações window (also when it is reopened).
+    @Published var settingsTab: SettingsTab = .general
     weak var mainWindow: NSWindow?
+    weak var settingsWindow: NSWindow? { didSet { observeSettingsClose() } }
     var connectAction: (Connection) -> Void
     var disconnectAction: (UUID) -> Void
     var openWindowFallback: (() -> Void)?
+    /// SwiftUI's openWindow(id: "settings"), captured by any view that has it.
+    var openSettingsFallback: (() -> Void)?
     var activateApp: () -> Void = { NSApplication.shared.activate(ignoringOtherApps: true) }
     var setActivationPolicy: (NSApplication.ActivationPolicy) -> Void = { _ = NSApp.setActivationPolicy($0) }
     private var observers = Set<AnyCancellable>()
     private var sessionObservers: [AnyCancellable] = []
+    private var settingsCloseObserver: NSObjectProtocol?
 
-    init(model: AppModel) {
+    init(model: AppModel, preferences: AppPreferences? = nil, updates: UpdateChecker? = nil,
+         loginItem: LoginItemController? = nil) {
+        let preferences = preferences ?? updates?.preferences ?? .disposable()
         self.model = model
+        self.preferences = preferences
+        self.updates = updates ?? UpdateChecker(preferences: preferences, transport: DisabledUpdateTransport())
+        self.loginItem = loginItem ?? LoginItemController(service: nil, unavailableReason: "Indisponível neste contexto.")
         connectAction = { [unowned model] in model.connect($0) }
         disconnectAction = { [unowned model] in model.manager.disconnect($0) }
         model.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &observers)
         model.service.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &observers)
+        preferences.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &observers)
+        self.updates.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &observers)
+        self.loginItem.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &observers)
+        // Turning the menu bar icon off must never leave the app without a Dock icon.
+        preferences.$showMenuBarIcon.dropFirst().sink { [weak self] shown in
+            if !shown { self?.setActivationPolicy(.regular) }
+        }.store(in: &observers)
         // A @Published change inside a Session does not publish the manager's dictionary,
         // so each session is observed individually. manager.changed stays untouched.
         model.manager.$sessions.sink { [weak self] sessions in
@@ -115,9 +166,32 @@ final class MenuBarCoordinator: ObservableObject {
     func action(for connection: Connection) -> MenuBarRowAction {
         MenuBarRowAction.of(model.manager.session(connection.id), ready: model.ready, serviceReady: model.service.canConnect)
     }
-    func showServiceManagement() {
-        showMainWindow()
-        pendingServiceSheet = true
+    func showServiceManagement() { showSettings(.service) }
+
+    /// The single Configurações window, brought to the front on the requested tab.
+    func showSettings(_ tab: SettingsTab? = nil) {
+        if let tab { settingsTab = tab }
+        setActivationPolicy(.regular)
+        activateApp()
+        if let window = settingsWindow, window.isVisible || window.isMiniaturized {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+        } else if let openSettingsFallback {
+            openSettingsFallback() // A closed Window scene is recreated by SwiftUI, once.
+        } else {
+            settingsWindow?.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    /// "Verificar atualizações…": ignores the interval and shows the result.
+    func checkForUpdates() {
+        updates.checkNow()
+        showSettings(.updates)
+    }
+
+    /// Launch: a hidden menu bar icon with saved preferences keeps the Dock icon.
+    func enforceVisibility() {
+        if !preferences.showMenuBarIcon { setActivationPolicy(.regular) }
     }
 
     /// Forwards exactly one action to the model. Review goes to the window.
@@ -145,6 +219,27 @@ final class MenuBarCoordinator: ObservableObject {
     }
     func hideMainWindow(_ window: NSWindow) {
         window.orderOut(nil)
-        setActivationPolicy(.accessory)
+        setActivationPolicy(policyAfterHiding(otherWindowVisible: settingsWindow?.isVisible == true))
+    }
+
+    /// Same Dock rule for both windows: stay in the Dock while another window is shown
+    /// or when the user (or the hidden menu bar icon) keeps it there.
+    func policyAfterHiding(otherWindowVisible: Bool) -> NSApplication.ActivationPolicy {
+        otherWindowVisible || !preferences.hidesDockOnClose ? .regular : .accessory
+    }
+
+    func settingsWindowClosed() {
+        settingsWindow = nil
+        setActivationPolicy(policyAfterHiding(otherWindowVisible: mainWindow?.isVisible == true))
+    }
+
+    private func observeSettingsClose() {
+        if let settingsCloseObserver { NotificationCenter.default.removeObserver(settingsCloseObserver) }
+        settingsCloseObserver = nil
+        guard let settingsWindow else { return }
+        settingsCloseObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification,
+                                                                       object: settingsWindow, queue: nil) { [weak self] _ in
+            MainActor.assumeIsolated { self?.settingsWindowClosed() }
+        }
     }
 }

@@ -5,10 +5,18 @@ import VPNHelperShared
 struct MainView: View {
     @ObservedObject var model: AppModel
     let menuBar: MenuBarCoordinator
+    @ObservedObject private var updates: UpdateChecker
     @State private var selected: UUID?
     @State private var editing: Connection?
     @State private var deleting: Connection?
-    @State private var managingService = false
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(model: AppModel, menuBar: MenuBarCoordinator) {
+        _model = ObservedObject(wrappedValue: model)
+        self.menuBar = menuBar
+        _updates = ObservedObject(wrappedValue: menuBar.updates)
+    }
 
     var body: some View {
         HSplitView {
@@ -25,18 +33,28 @@ struct MainView: View {
                     }
                 }
 
-            detail
-                .frame(minWidth: 530, maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 0) {
+                if updates.showsCard, let offer = updates.offer {
+                    UpdateCard(offer: offer, update: { menuBar.showSettings(.updates) },
+                               later: { updates.postpone() })
+                        .padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 2)
+                        .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
+                }
+                detail
+            }
+            .animation(Motion.state(reduceMotion), value: updates.showsCard)
+            .frame(minWidth: 530, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .sheet(isPresented: $managingService) { ServiceSheet(model: model) }
+        .onAppear {
+            let open = openWindow
+            if menuBar.openSettingsFallback == nil {
+                menuBar.openSettingsFallback = { open(id: MenuBarCoordinator.settingsSceneID) }
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             // Back from System Settings: read the real status again (approval or revocation).
             if !model.service.busy { model.service.refresh() }
-        }
-        .onReceive(menuBar.$pendingServiceSheet) { show in
-            guard show else { return }
-            DispatchQueue.main.async { managingService = true; menuBar.pendingServiceSheet = false }
         }
         .sheet(item: $editing) { connection in
             ConnectionEditor(model: model, connection: connection) { selected = connection.id }
@@ -84,7 +102,7 @@ struct MainView: View {
             deleting = connection
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            ServiceStatusRow(service: model.service) { managingService = true }
+            ServiceStatusRow(service: model.service) { menuBar.showServiceManagement() }
                 .padding(.horizontal, 10).padding(.bottom, 10).padding(.top, 4)
         }
     }
@@ -117,7 +135,7 @@ struct MainView: View {
         if let connection = model.data.connections.first(where: { $0.id == selected }) {
             ConnectionDetail(connection: connection, session: model.manager.session(connection.id), model: model,
                              edit: { editing = connection }, delete: { deleting = connection },
-                             manageService: { managingService = true })
+                             manageService: { menuBar.showServiceManagement() })
                 .id(connection.id)
         } else if !model.ready {
             EmptyStateView(symbol: "exclamationmark.triangle", title: "Não foi possível carregar as conexões",

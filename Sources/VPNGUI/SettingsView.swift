@@ -1,0 +1,508 @@
+import SwiftUI
+import AppKit
+import ServiceManagement
+import VPNHelperShared
+
+// Configurações: sidebar with tabs, sections in rounded cards, rows with a colored icon,
+// title, secondary subtitle and a trailing control. Same visual language as the main
+// window (quiet fills, InlineNotice, glass buttons on macOS 26 with fallbacks).
+
+struct SettingsView: View {
+    @ObservedObject var menuBar: MenuBarCoordinator
+    /// Injected by the local checks; production looks only for the Caskroom directory.
+    var installedByHomebrew = HomebrewInstall.detect()
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        NavigationSplitView {
+            SettingsSidebar(menuBar: menuBar)
+                .navigationSplitViewColumnWidth(min: 220, ideal: 235, max: 280)
+        } detail: {
+            SettingsDetail(menuBar: menuBar, installedByHomebrew: installedByHomebrew)
+                .navigationTitle(menuBar.settingsTab.title)
+        }
+        .frame(minWidth: 640, minHeight: 440)
+        .onAppear {
+            let open = openWindow
+            if menuBar.openSettingsFallback == nil {
+                menuBar.openSettingsFallback = { open(id: MenuBarCoordinator.settingsSceneID) }
+            }
+            menuBar.loginItem.refresh()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            menuBar.loginItem.refresh() // Back from System Settings.
+        }
+    }
+}
+
+struct SettingsSidebar: View {
+    @ObservedObject var menuBar: MenuBarCoordinator
+    var body: some View {
+        List(selection: Binding<SettingsTab?>(get: { menuBar.settingsTab }, set: { if let tab = $0 { menuBar.settingsTab = tab } })) {
+            ForEach(SettingsTab.allCases) { tab in
+                HStack(spacing: 8) {
+                    Label(tab.title, systemImage: tab.symbol)
+                    Spacer(minLength: 4)
+                    indicator(for: tab)
+                }
+                .tag(tab)
+            }
+        }
+        .listStyle(.sidebar)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            Text("Versão \(HelperConstants.releaseVersion) (build \(HelperConstants.build))")
+                .font(.caption).foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16).padding(.vertical, 12)
+        }
+    }
+
+    @ViewBuilder private func indicator(for tab: SettingsTab) -> some View {
+        switch tab {
+        case .updates where menuBar.updates.pending:
+            UpdateDot().accessibilityLabel("Atualização disponível")
+        case .service:
+            StatusSymbol(symbol: menuBar.model.service.health.symbol, tone: menuBar.model.service.health.tone, size: 11)
+                .help(menuBar.model.service.health.title)
+                .accessibilityLabel(menuBar.model.service.health.title)
+        default:
+            EmptyView()
+        }
+    }
+}
+
+/// Small accent dot marking a pending update.
+struct UpdateDot: View {
+    var body: some View {
+        Circle().fill(Color.accentColor).frame(width: 8, height: 8)
+            .accessibilityElement()
+            .accessibilityLabel("Atualização disponível")
+    }
+}
+
+struct SettingsDetail: View {
+    @ObservedObject var menuBar: MenuBarCoordinator
+    let installedByHomebrew: Bool
+    var body: some View {
+        let tab = menuBar.settingsTab
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(tab.title).font(.largeTitle.weight(.semibold)).accessibilityAddTraits(.isHeader)
+                    Text(tab.subtitle).font(.callout).foregroundStyle(.secondary)
+                }
+                switch tab {
+                case .general: GeneralSettings(menuBar: menuBar, preferences: menuBar.preferences, loginItem: menuBar.loginItem)
+                case .updates: UpdateSettings(updates: menuBar.updates, preferences: menuBar.preferences,
+                                              installedByHomebrew: installedByHomebrew)
+                case .service: ServiceSettings(model: menuBar.model)
+                case .about: AboutSettings()
+                }
+            }
+            .padding(.horizontal, 28).padding(.vertical, 24)
+            .frame(maxWidth: 720, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .id(tab) // Each tab starts at the top.
+    }
+}
+
+// MARK: - Building blocks
+
+/// Section: small title above a rounded card, optional footnote below.
+struct SettingsSection<Content: View>: View {
+    var title: String?
+    var footer: String?
+    @ViewBuilder var content: Content
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let title {
+                Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                    .padding(.leading, 4).accessibilityAddTraits(.isHeader)
+            }
+            let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+            VStack(alignment: .leading, spacing: 0) { content }
+                .background(shape.fill(Color.primary.opacity(contrast == .increased ? 0.07 : 0.04)))
+                .overlay(shape.strokeBorder(contrast == .increased ? Color.primary.opacity(0.5) : Color(nsColor: .separatorColor),
+                                            lineWidth: contrast == .increased ? 1 : 0.5))
+            if let footer {
+                Text(footer).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 4)
+            }
+        }
+    }
+}
+
+/// Hairline between rows, aligned with the row text.
+struct SettingsDivider: View {
+    var body: some View { Divider().padding(.leading, 52) }
+}
+
+/// SF Symbol in a colored rounded square.
+struct SettingsIcon: View {
+    let symbol: String
+    let color: Color
+    var size: CGFloat = 26
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.system(size: size * 0.52, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: size, height: size)
+            .background(RoundedRectangle(cornerRadius: size * 0.24, style: .continuous).fill(color.gradient))
+            .accessibilityHidden(true)
+    }
+}
+
+/// Icon, title, secondary subtitle (up to two lines, or more for notes) and a trailing control.
+struct SettingsRow<Control: View>: View {
+    let symbol: String
+    let color: Color
+    let title: String
+    var subtitle: String?
+    var note: String?
+    @ViewBuilder var control: Control
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            SettingsIcon(symbol: symbol, color: color)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.body)
+                if let subtitle {
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                }
+                if let note {
+                    Text(note).font(.caption).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+            control
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+    }
+}
+
+extension SettingsRow where Control == EmptyView {
+    init(symbol: String, color: Color, title: String, subtitle: String? = nil, note: String? = nil) {
+        self.init(symbol: symbol, color: color, title: title, subtitle: subtitle, note: note) { EmptyView() }
+    }
+}
+
+private extension Toggle {
+    func settingsSwitch(_ label: String) -> some View {
+        toggleStyle(.switch).labelsHidden().controlSize(.small).accessibilityLabel(label)
+    }
+}
+
+// MARK: - Geral
+
+struct GeneralSettings: View {
+    let menuBar: MenuBarCoordinator
+    @ObservedObject var preferences: AppPreferences
+    @ObservedObject var loginItem: LoginItemController
+
+    var body: some View {
+        SettingsSection(title: "Aplicativo") {
+            SettingsRow(symbol: "menubar.rectangle", color: .blue, title: "Ícone na barra de menus",
+                        subtitle: "Mostra o OpenFortiDesk na barra de menus para conectar rapidamente.") {
+                Toggle("Ícone na barra de menus", isOn: $preferences.showMenuBarIcon).settingsSwitch("Ícone na barra de menus")
+            }
+            SettingsDivider()
+            SettingsRow(symbol: "dock.rectangle", color: .indigo, title: "Ocultar do Dock ao fechar a janela",
+                        subtitle: "Ao fechar a janela, o app continua rodando só na barra de menus.",
+                        note: preferences.showMenuBarIcon ? nil : "Necessário enquanto o ícone da barra de menus estiver desligado") {
+                Toggle("Ocultar do Dock ao fechar a janela",
+                       isOn: Binding(get: { preferences.hidesDockOnClose }, set: { preferences.hideDockOnClose = $0 }))
+                    .settingsSwitch("Ocultar do Dock ao fechar a janela")
+                    .disabled(!preferences.showMenuBarIcon)
+            }
+            SettingsDivider()
+            SettingsRow(symbol: "power", color: .green, title: "Abrir ao iniciar sessão", subtitle: loginItem.detail) {
+                HStack(spacing: 8) {
+                    if loginItem.status == .requiresApproval && loginItem.available {
+                        Button("Abrir Ajustes…") { loginItem.openSystemSettings() }
+                            .controlSize(.small).adaptiveButtonStyle()
+                            .help("Ajustes do Sistema › Geral › Itens de Início")
+                    }
+                    Toggle("Abrir ao iniciar sessão",
+                           isOn: Binding(get: { loginItem.enabled }, set: { loginItem.setEnabled($0) }))
+                        .settingsSwitch("Abrir ao iniciar sessão")
+                        .disabled(!loginItem.available)
+                }
+            }
+        }
+        SettingsSection(title: "Ao sair") {
+            SettingsRow(symbol: "rectangle.portrait.and.arrow.right", color: .orange, title: "Fechar a janela não desconecta",
+                        subtitle: "As VPNs continuam ativas com a janela fechada. Sair (⌘Q ou pela barra de menus) desconecta as VPNs antes de encerrar o app.")
+        }
+    }
+}
+
+// MARK: - Atualizações
+
+struct UpdateSettings: View {
+    @ObservedObject var updates: UpdateChecker
+    @ObservedObject var preferences: AppPreferences
+    let installedByHomebrew: Bool
+    @State private var copied = false
+
+    var body: some View {
+        SettingsSection(title: "Versão instalada") {
+            SettingsRow(symbol: "shippingbox", color: .blue, title: "OpenFortiDesk \(HelperConstants.releaseVersion)",
+                        subtitle: lastCheckText) {
+                HStack(spacing: 8) {
+                    if updates.checking {
+                        ProgressView().controlSize(.small).accessibilityLabel("Verificando")
+                    }
+                    Button("Verificar agora") { updates.checkNow() }
+                        .controlSize(.small).adaptiveButtonStyle()
+                        .disabled(updates.checking)
+                }
+            }
+        }
+        if !updates.checking {
+            switch updates.outcome {
+            case .failed:
+                InlineNotice(tone: .warning, symbol: "wifi.exclamationmark", title: "Não foi possível verificar agora",
+                             message: "Sem conexão ou limite da API do GitHub. A próxima verificação programada tenta de novo.")
+            case .upToDate:
+                InlineNotice(tone: .success, symbol: "checkmark.circle", title: "Você está na versão mais recente")
+            case .none, .available:
+                EmptyView()
+            }
+        }
+        if let offer = updates.offer { offerSection(offer) }
+        SettingsSection(title: "Verificação", footer: "Só consulta a lista pública de versões do projeto no GitHub, sem enviar dados seus ou das conexões. Nada é baixado nem executado pelo app.") {
+            SettingsRow(symbol: "clock.arrow.circlepath", color: .teal, title: "Verificar automaticamente",
+                        subtitle: "Ao abrir o app e ao conectar, no máximo a cada 4 horas.") {
+                Toggle("Verificar automaticamente", isOn: $preferences.checkForUpdates).settingsSwitch("Verificar automaticamente")
+            }
+            SettingsDivider()
+            SettingsRow(symbol: "testtube.2", color: .purple, title: "Incluir versões de teste (release candidates)",
+                        subtitle: "Também oferece versões candidatas, antes da versão estável.") {
+                Toggle("Incluir versões de teste", isOn: Binding(get: { preferences.includePrereleases },
+                                                                  set: { preferences.includePrereleases = $0; updates.channelChanged() }))
+                    .settingsSwitch("Incluir versões de teste")
+            }
+        }
+    }
+
+    private var lastCheckText: String {
+        guard let last = preferences.lastUpdateSuccess else {
+            return preferences.lastUpdateAttempt == nil ? "Ainda não verificado" : "Nenhuma verificação concluída ainda"
+        }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Locale(identifier: "pt_BR")
+        formatter.unitsStyle = .full
+        let now = updates.now()
+        return now.timeIntervalSince(last) < 60 ? "Verificado há instantes" : "Verificado \(formatter.localizedString(for: last, relativeTo: now))"
+    }
+
+    @ViewBuilder private func offerSection(_ offer: UpdateOffer) -> some View {
+        SettingsSection(title: "Nova versão") {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .center, spacing: 12) {
+                    Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 40, height: 40).accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("OpenFortiDesk \(offer.version)").font(.headline).textSelection(.enabled)
+                        Text(subtitle(offer)).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    UpdateDot()
+                }
+                if !offer.notes.isEmpty {
+                    ScrollView(.vertical) {
+                        Text(offer.notes).font(.callout).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(10)
+                    }
+                    .frame(maxHeight: 150)
+                    .contentPanel(cornerRadius: 8)
+                }
+                HStack(spacing: 8) {
+                    Button { open(offer) } label: { Label("Ver no GitHub", systemImage: "arrow.up.right.square") }
+                        .adaptiveButtonStyle()
+                    Button("Pular esta versão") { updates.skipOffer() }
+                        .adaptiveButtonStyle()
+                        .help("Não oferecer mais a \(offer.version); uma versão maior volta a aparecer")
+                }
+                .controlSize(.small)
+            }
+            .padding(14)
+        }
+        SettingsSection(title: "Como atualizar") {
+            VStack(alignment: .leading, spacing: 12) {
+                if installedByHomebrew {
+                    VStack(alignment: .leading, spacing: 4) {
+                        step(1, "Saia do OpenFortiDesk com Sair (isso desconecta as VPNs).")
+                        step(2, "Cole o comando no Terminal.")
+                        step(3, "Abra o app de novo.")
+                    }
+                    Text(HomebrewInstall.upgradeCommand)
+                        .font(.system(.callout, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                        .contentPanel(cornerRadius: 8)
+                        .accessibilityLabel("Comando: \(HomebrewInstall.upgradeCommand)")
+                    HStack(spacing: 8) {
+                        Button {
+                            HomebrewInstall.copyCommand()
+                            copied = true
+                        } label: { Label(copied ? "Copiado" : "Copiar comando", systemImage: copied ? "checkmark" : "doc.on.doc") }
+                            .adaptiveButtonStyle(prominent: true)
+                        Button { HomebrewInstall.openTerminal() } label: { Label("Abrir Terminal", systemImage: "terminal") }
+                            .adaptiveButtonStyle()
+                    }
+                    .controlSize(.small)
+                } else {
+                    Text("Este app não foi instalado pelo Homebrew. Baixe a nova versão na página do GitHub e substitua o app com o OpenFortiDesk fechado.")
+                        .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Button { open(offer) } label: { Label("Baixar no GitHub", systemImage: "arrow.down.circle") }
+                        .adaptiveButtonStyle(prominent: true).controlSize(.small)
+                }
+            }
+            .padding(14)
+        }
+    }
+
+    private func step(_ number: Int, _ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text("\(number).").monospacedDigit().foregroundStyle(.secondary)
+            Text(text).fixedSize(horizontal: false, vertical: true)
+        }
+        .font(.callout)
+    }
+
+    private func subtitle(_ offer: UpdateOffer) -> String {
+        var parts = [offer.prerelease ? "Versão de teste" : "Versão estável"]
+        if let date = offer.publishedAt {
+            parts.append("publicada em " + date.formatted(.dateTime.day().month(.wide).year().locale(Locale(identifier: "pt_BR"))))
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func open(_ offer: UpdateOffer) {
+        if let url = offer.pageURL { NSWorkspace.shared.open(url) }
+    }
+}
+
+// MARK: - Serviço privilegiado
+
+struct ServiceSettings: View {
+    let model: AppModel
+    /// Checked against SECURITY.md and VPNHelperCore: XPC peers must carry this app's
+    /// identifier and Team ID, the helper only starts the approved, integrity-checked
+    /// runtime copy, and passwords reach it per connection through file descriptors.
+    static let explanation = "O openfortivpn precisa de privilégios de administrador para criar a interface da VPN e ajustar rotas e DNS. Em vez de pedir sua senha a cada conexão ou rodar o app como root, o OpenFortiDesk registra um pequeno serviço do sistema que só aceita pedidos deste app assinado, só executa a cópia do openfortivpn que você aprovou e não guarda senhas: elas ficam no seu Keychain e são entregues só ao conectar. Você pode removê-lo aqui a qualquer momento."
+
+    var body: some View {
+        SettingsSection(title: "Por que este serviço existe") {
+            HStack(alignment: .top, spacing: 12) {
+                SettingsIcon(symbol: "lock.shield", color: .blue)
+                Text(Self.explanation).font(.callout).fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(14)
+        }
+        InlineNotice(tone: .neutral, symbol: "info.circle",
+                     title: "Antes de desinstalar com brew uninstall, use Remover serviço aqui.")
+        SettingsSection(title: "Estado") {
+            ServicePanel(model: model).padding(16)
+        }
+    }
+}
+
+// MARK: - Sobre
+
+struct AboutSettings: View {
+    var body: some View {
+        HStack(spacing: 16) {
+            Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 72, height: 72).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("OpenFortiDesk").font(.title2.weight(.semibold))
+                Text("Versão \(HelperConstants.releaseVersion) (build \(HelperConstants.build))")
+                    .font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                Text("Interface nativa de macOS para o openfortivpn.").font(.callout).foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        SettingsSection(title: "Links") {
+            link("chevron.left.forwardslash.chevron.right", .gray, "Repositório", "github.com/\(UpdateFeed.repository)", UpdateFeed.repositoryPage)
+            SettingsDivider()
+            link("doc.text", .blue, "Notas desta versão", "v\(HelperConstants.releaseVersion) no GitHub",
+                 UpdateFeed.releasePage(for: HelperConstants.releaseVersion))
+            SettingsDivider()
+            link("checkmark.seal", .green, "Licença", "MIT", URL(string: "https://github.com/\(UpdateFeed.repository)/blob/main/LICENSE"))
+            SettingsDivider()
+            link("list.bullet.rectangle", .orange, "Avisos de terceiros", "THIRD_PARTY_NOTICES.md",
+                 URL(string: "https://github.com/\(UpdateFeed.repository)/blob/main/THIRD_PARTY_NOTICES.md"))
+        }
+        SettingsSection(title: "Dependência") {
+            SettingsRow(symbol: "terminal", color: .gray, title: "openfortivpn",
+                        subtitle: "Dependência externa, instalada pelo Homebrew e mantida pelo próprio projeto. Não é distribuída com o OpenFortiDesk.")
+        }
+    }
+
+    private func link(_ symbol: String, _ color: Color, _ title: String, _ subtitle: String, _ url: URL?) -> some View {
+        SettingsRow(symbol: symbol, color: color, title: title, subtitle: subtitle) {
+            Button { if let url { NSWorkspace.shared.open(url) } } label: { Image(systemName: "arrow.up.right.square") }
+                .buttonStyle(.borderless)
+                .help("Abrir no navegador")
+                .accessibilityLabel("Abrir \(title) no navegador")
+                .disabled(url == nil)
+        }
+    }
+}
+
+// MARK: - Update card (main window)
+
+/// Discreet notice above the detail area: never covers content, never modal.
+struct UpdateCard: View {
+    let offer: UpdateOffer
+    let update: () -> Void
+    let later: () -> Void
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    /// The first bullets when the notes have them (headings carry little), else the first lines.
+    private var summary: String {
+        let lines = offer.notes.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let bullets = lines.filter { $0.hasPrefix("• ") }.map { String($0.dropFirst(2)) }
+        return (bullets.isEmpty ? lines : bullets).prefix(2).joined(separator: " · ")
+    }
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        HStack(alignment: .center, spacing: 12) {
+            Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 34, height: 34).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("OpenFortiDesk \(offer.version) disponível").font(.callout.weight(.semibold))
+                Text(summary.isEmpty ? "Uma nova versão está disponível pelo Homebrew." : summary)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+            GlassGroup(spacing: 6) {
+                HStack(spacing: 6) {
+                    Button { if let url = offer.pageURL { NSWorkspace.shared.open(url) } } label: {
+                        Label("Ver novidades", systemImage: "doc.text.magnifyingglass").labelStyle(.iconOnly)
+                    }
+                    .adaptiveButtonStyle()
+                    .help("Ver novidades no GitHub")
+                    Button("Depois", action: later).adaptiveButtonStyle()
+                        .help("Esconder até a próxima abertura do app")
+                    Button("Atualizar", action: update).adaptiveButtonStyle(prominent: true)
+                        .help("Mostrar como atualizar")
+                }
+                .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .background(shape.fill(Color.accentColor.opacity(0.08)))
+        .overlay(shape.strokeBorder(Color.accentColor.opacity(contrast == .increased ? 0.7 : 0.28), lineWidth: contrast == .increased ? 1 : 0.75))
+    }
+}

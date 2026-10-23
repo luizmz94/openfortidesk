@@ -45,6 +45,7 @@ struct MenuBarView: View {
             Divider().padding(.horizontal, 10)
             content
             banners
+            if let offer = menuBar.updates.offer { updateLine(offer) }
             Divider().padding(.horizontal, 10)
             footer.padding(.horizontal, 10).padding(.vertical, 10)
         }
@@ -52,6 +53,10 @@ struct MenuBarView: View {
         .animation(Motion.state(reduceMotion), value: menuBar.summary)
         .onAppear {
             menuBar.openWindowFallback = { openWindow(id: MenuBarCoordinator.sceneID) }
+            if menuBar.openSettingsFallback == nil {
+                let open = openWindow
+                menuBar.openSettingsFallback = { open(id: MenuBarCoordinator.settingsSceneID) }
+            }
             if !model.service.busy { model.service.refresh() }
         }
     }
@@ -135,15 +140,44 @@ struct MenuBarView: View {
         }
     }
 
+    /// Compact, only while an update is pending; the state icon of the VPNs is untouched.
+    private func updateLine(_ offer: UpdateOffer) -> some View {
+        Button { menuBar.showSettings(.updates) } label: {
+            HStack(spacing: 8) {
+                UpdateDot()
+                Text("Atualização disponível: \(offer.version)").font(.callout)
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+            .padding(.horizontal, 8).padding(.vertical, 6)
+        }
+        .buttonStyle(.plain)
+        .modifier(HoverHighlight(cornerRadius: 8))
+        .padding(.horizontal, 6).padding(.bottom, 6)
+        .help("Abrir Configurações › Atualizações")
+        .accessibilityLabel("Atualização disponível: \(offer.version). Abrir Atualizações")
+    }
+
     private var footer: some View {
         GlassGroup(spacing: 8) {
             HStack(spacing: 8) {
                 Button { menuBar.showMainWindow() } label: { Label("Abrir OpenFortiDesk", systemImage: "macwindow") }
                     .keyboardShortcut("o")
                     .help("Mostrar a janela principal para cadastro, certificados e logs (⌘O)")
-                Button { menuBar.showServiceManagement() } label: { Label("Serviço", systemImage: "gearshape") }
-                    .help("Estado, aprovação e remoção do serviço privilegiado")
                 Spacer(minLength: 0)
+                Button { menuBar.checkForUpdates() } label: { Label("Verificar atualizações…", systemImage: "arrow.triangle.2.circlepath") }
+                    .labelStyle(.iconOnly)
+                    .help("Verificar atualizações…")
+                // Configurações also hold the privileged service tab (Gerenciar…).
+                Button { menuBar.showSettings() } label: { Label("Configurações…", systemImage: "gearshape") }
+                    .labelStyle(.iconOnly)
+                    .keyboardShortcut(",")
+                    .overlay(alignment: .topTrailing) {
+                        if menuBar.updates.pending { UpdateDot().offset(x: 2, y: -2).allowsHitTesting(false) }
+                    }
+                    .help(menuBar.updates.pending ? "Configurações… (atualização disponível) (⌘,)" : "Configurações… (⌘,)")
+
                 Button { NSApp.terminate(nil) } label: { Label("Sair", systemImage: "power") }
                     .keyboardShortcut("q")
                     .help("Encerrar o OpenFortiDesk; conexões ativas exigem confirmação (⌘Q)")

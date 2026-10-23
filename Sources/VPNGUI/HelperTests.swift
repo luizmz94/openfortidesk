@@ -771,9 +771,14 @@ enum HelperTests {
             try require(disconnects == 1, "Desconectar não encaminhado")
             model.manager.session(c.id).state = .disconnected
             menuBar.activateApp = {}
-            menuBar.setActivationPolicy = { _ in }
+            var policies: [NSApplication.ActivationPolicy] = []
+            menuBar.setActivationPolicy = { policies.append($0) }
+            var settingsOpened = 0
+            menuBar.openSettingsFallback = { settingsOpened += 1 }
+            menuBar.settingsTab = .general
             menuBar.showServiceManagement()
-            try require(menuBar.pendingServiceSheet, "Gerenciar não pediu a folha do serviço")
+            try require(menuBar.settingsTab == .service && settingsOpened == 1 && policies.last == .regular,
+                        "Gerenciar não abriu Configurações › Serviço privilegiado")
         }
 
         test("UI: área do serviço e orientação renderizam fora da tela (sem abrir o app real)") {
@@ -801,7 +806,7 @@ enum HelperTests {
             let pending = ServiceController(policy: .trusted(team: "LOCALCHECK"), registrar: registrar, client: nil)
             pending.refresh()
             let pendingModel = try model("ui", service: pending)
-            try render(ServiceSheet(model: pendingModel), size: NSSize(width: 620, height: 330), name: "service-not-registered")
+            try render(ServicePanel(model: pendingModel).padding(20), size: NSSize(width: 620, height: 330), name: "service-not-registered")
             try render(ServiceStatusRow(service: pending) {}, size: NSSize(width: 300, height: 40), name: "service-row")
             let ready = readyService()
             ready.inspection = RuntimeInspection(candidatePath: "/opt/homebrew/bin/openfortivpn", resolvedPath: "/opt/homebrew/Cellar/openfortivpn/1.24.1_1/bin/openfortivpn",
@@ -810,7 +815,7 @@ enum HelperTests {
                                                  systemLibraries: ["/usr/lib/libSystem.B.dylib"], packageVersion: "openfortivpn 1.24.1_1",
                                                  warnings: ["Exemplo de aviso de local alterável."])
             let readyModel = try model("ui-ready", service: ready)
-            try render(ServiceSheet(model: readyModel), size: NSSize(width: 620, height: 560), name: "service-approval")
+            try render(ServicePanel(model: readyModel).padding(20), size: NSSize(width: 620, height: 600), name: "service-approval")
             let c = profile("Exemplo")
             try pendingModel.save(c, password: "fixturePASSvalue42")
             try render(ConnectionDetail(connection: c, session: pendingModel.manager.session(c.id), model: pendingModel, edit: {}, delete: {}),

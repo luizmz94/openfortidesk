@@ -1,14 +1,22 @@
 OpenFortiDesk release candidate: macOS 13+, Apple Silicon arm64 only.
 
-Changes: `brew upgrade`, `reinstall` and `uninstall` work again. Homebrew 7 runs
-cask steps in a sandbox that blocks the service registration and the helper; there
-the maintenance command now only checks that OpenFortiDesk, its supervisors and its
-openfortivpn are not running, and keeps the service registered for the upgraded app.
-Quit the app with Sair before upgrading. Before `brew uninstall`, use
-Gerenciar… > Remover serviço in the app. See CHANGELOG.md.
+Changes in rc.4:
+- Configurações window (⌘,): menu bar icon, hide from the Dock on close, open at
+  login, and an About tab.
+- Update check: the app asks the public GitHub releases API (anonymously, at most
+  every 4 hours, or on demand with Verificar atualizações…) and shows a discreet
+  notice when a new version exists. It never downloads or runs anything; updating
+  stays with Homebrew. Automatic checks can be turned off in Configurações.
+- Service management is now the Serviço privilegiado tab of Configurações, with a
+  short explanation of why the service exists. Gerenciar… opens it.
+See CHANGELOG.md.
 
-Coming from rc.1 or rc.2: their maintenance command always fails in the sandbox, so
-`brew upgrade` stops without replacing anything. Unblock it once:
+Updating from rc.3: quit OpenFortiDesk with Sair (this disconnects its VPNs), then
+run `brew upgrade --cask luizmz94/openfortidesk/openfortidesk` and open the app.
+Before `brew uninstall`, use Configurações… > Serviço privilegiado > Remover serviço.
+
+Coming from rc.1 or rc.2: their maintenance command always fails in the Homebrew
+sandbox, so `brew upgrade` stops without replacing anything. Unblock it once:
 1. In the app, use Gerenciar… > Remover serviço, then quit with Sair.
 2. Move /Applications/OpenFortiDesk.app to the Trash.
 3. rm -rf "$(brew --caskroom)/openfortidesk"

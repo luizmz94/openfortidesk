@@ -19,7 +19,10 @@ require a logged-in graphical session, Keychain, local XPC and loopback access;
 a restricted shell or CI runner may block them. Report those failures as blocked,
 not successful. The test runner uses separate data, disposable Keychain services,
 anonymous XPC listeners and harmless child processes. It never registers a daemon,
-connects to a VPN, requests root or changes routes/DNS.
+connects to a VPN, requests root or changes routes/DNS. Update-check tests use a
+fake transport (or an in-process URLProtocol) and never reach the network; settings
+tests use a disposable `UserDefaults` suite, never the user's preferences, and never
+register a login item.
 
 Ad hoc builds compile and render but fail closed for privileged operations.
 Fork distributors must use their own Apple identity and notarization profile:

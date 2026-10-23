@@ -12,6 +12,9 @@ final class AppModel: ObservableObject {
     let cookies: SAMLCookieStore
     /// Privileged service (SMAppService + authenticated XPC); the manager's transport.
     let service: ServiceController
+    /// Called on a user Conectar (not on automatic reconnects). Must return at once:
+    /// the update check it triggers never delays or changes the connection.
+    var onUserConnect: (() -> Void)?
     private var store: JSONStore?
     init(store suppliedStore: JSONStore? = nil, passwords: PasswordStore = PasswordStore(),
          cookies: SAMLCookieStore = SAMLCookieStore(), service: ServiceController? = nil) {
@@ -95,6 +98,7 @@ final class AppModel: ObservableObject {
         connect(updated.connections[index])
     }
     func connect(_ connection: Connection, retrying: Bool = false) {
+        if !retrying { onUserConnect?() }
         do {
             guard !manager.session(connection.id).authenticationRejected else {
                 throw AppFailure("A última autenticação foi recusada. Edite a conexão e confirme as credenciais antes de tentar novamente, para evitar bloquear o usuário.")
@@ -174,6 +178,7 @@ struct VPNGUIApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @StateObject private var model: AppModel
     @StateObject private var menuBar: MenuBarCoordinator
+    @StateObject private var preferences: AppPreferences
     init() {
         if CommandLine.arguments.contains("--release-checks") { exit(ReleaseTests.run()) }
         if CommandLine.arguments.contains(where: [Maintenance.argument, Maintenance.legacyMigrationArgument].contains) {
@@ -184,9 +189,22 @@ struct VPNGUIApp: App {
         // One AppModel (and VPNManager) shared by the window and the menu bar.
         let model = UIReviewFixture.enabled ? UIReviewFixture.makeModel() : AppModel()
         model.service.refresh() // Read-only: registration status and authenticated handshake.
-        let menuBar = MenuBarCoordinator(model: model)
+        let preferences = AppPreferences.forCurrentProcess()
+        let updates = UpdateChecker.production(preferences: preferences)
+        let menuBar = MenuBarCoordinator(model: model, preferences: preferences, updates: updates,
+                                         loginItem: .production())
+        menuBar.enforceVisibility()
+        if !MenuBarCoordinator.isLocalChecks && !UIReviewFixture.enabled {
+            model.onUserConnect = { [weak updates] in updates?.checkIfDue() }
+            // After the interface is ready; the request runs in the background.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak updates] in
+                updates?.checkOnLaunch()
+                updates?.startTimer()
+            }
+        }
         _model = StateObject(wrappedValue: model)
         _menuBar = StateObject(wrappedValue: menuBar)
+        _preferences = StateObject(wrappedValue: preferences)
     }
     var body: some Scene {
         WindowGroup("OpenFortiDesk · \(HelperConstants.version)", id: MenuBarCoordinator.sceneID) {
@@ -199,15 +217,79 @@ struct VPNGUIApp: App {
                     .background(WindowCloseGuard(delegate: delegate, menuBar: menuBar))
             }
         }
-        .commands { CommandGroup(replacing: .newItem) {} }
+        .commands {
+            CommandGroup(replacing: .newItem) {}
+            AppCommands(menuBar: menuBar)
+        }
+        Window("Configurações", id: MenuBarCoordinator.settingsSceneID) {
+            SettingsView(menuBar: menuBar)
+                .background(SettingsWindowBinding(menuBar: menuBar))
+        }
+        .defaultSize(width: 760, height: 540)
         // Not inserted in the local checks runner, so it still quits on its own.
-        MenuBarExtra(isInserted: .constant(!MenuBarCoordinator.isLocalChecks)) {
+        MenuBarExtra(isInserted: Binding(get: { !MenuBarCoordinator.isLocalChecks && preferences.showMenuBarIcon },
+                                         set: { if !MenuBarCoordinator.isLocalChecks { preferences.showMenuBarIcon = $0 } })) {
             MenuBarView(menuBar: menuBar)
         } label: {
             MenuBarLabel(menuBar: menuBar)
                 .onAppear { delegate.attach(model: model, menuBar: menuBar) }
         }
         .menuBarExtraStyle(.window)
+    }
+}
+
+/// App menu: Sobre, Verificar atualizações…, separator, Configurações… ⌘,
+struct AppCommands: Commands {
+    let menuBar: MenuBarCoordinator
+    @Environment(\.openWindow) private var openWindow
+    var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Verificar atualizações…") {
+                register()
+                menuBar.checkForUpdates()
+            }
+        }
+        CommandGroup(replacing: .appSettings) {
+            Button("Configurações…") {
+                register()
+                menuBar.showSettings()
+            }
+            .keyboardShortcut(",", modifiers: .command)
+        }
+    }
+    private func register() {
+        let open = openWindow
+        if menuBar.openSettingsFallback == nil {
+            menuBar.openSettingsFallback = { open(id: MenuBarCoordinator.settingsSceneID) }
+        }
+    }
+}
+
+/// Registers the Configurações window (single instance) so reopening brings it forward
+/// and closing applies the Dock rule.
+struct SettingsWindowBinding: NSViewRepresentable {
+    let menuBar: MenuBarCoordinator
+    func makeNSView(context: Context) -> SettingsWindowView { SettingsWindowView(menuBar: menuBar) }
+    func updateNSView(_ view: SettingsWindowView, context: Context) { view.bind() }
+}
+
+final class SettingsWindowView: NSView {
+    private let menuBar: MenuBarCoordinator
+    init(menuBar: MenuBarCoordinator) {
+        self.menuBar = menuBar
+        super.init(frame: .zero)
+    }
+    required init?(coder: NSCoder) { nil }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        bind()
+    }
+    func bind() {
+        guard let window, menuBar.settingsWindow !== window else { return }
+        window.identifier = MenuBarCoordinator.settingsWindowIdentifier
+        window.tabbingMode = .disallowed
+        window.minSize = NSSize(width: 640, height: 440)
+        menuBar.settingsWindow = window
     }
 }
 

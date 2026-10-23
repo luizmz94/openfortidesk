@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0-rc.4 — 2026-10-23
+
+- New Configurações window (⌘,) with Geral, Atualizações, Serviço privilegiado and
+  Sobre tabs: menu bar icon, hide from the Dock on close (never both hidden), open
+  at login, and the app version in the sidebar.
+- Update check: an anonymous request to the public GitHub releases API at launch, on
+  Conectar (at most every 4 hours), hourly and on demand (Verificar atualizações…).
+  A new version shows a discreet card, a menu bar line and a dot; it can be postponed
+  or skipped. Nothing is downloaded or run; updating stays `brew upgrade` with the
+  app closed. Release candidates are offered when running one; both are switchable.
+- The privileged service management moved from a sheet to the Serviço privilegiado
+  tab, with a short explanation of why the service exists. Gerenciar… opens it.
+
 ## 0.3.0-rc.3 — 2026-10-23
 
 - Fix `brew upgrade`, `reinstall` and `uninstall`, which always failed because

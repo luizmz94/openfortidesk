@@ -137,7 +137,7 @@ enum UIPreviewTests {
                 try render(ConnectionEditor(model: model, connection: connections[2], saved: {}), NSSize(width: 560, height: 600), "editor-saml")
                 try render(CertificateTrustSheet(connection: connections[4], digest: String(repeating: "0f", count: 32), trust: {}),
                            NSSize(width: 520, height: 400), "certificate-sheet")
-                try render(ServiceSheet(model: unavailableModel), NSSize(width: 620, height: 360), "service-sheet")
+                try render(ServicePanel(model: unavailableModel).padding(20), NSSize(width: 620, height: 360), "service-panel")
                 try render(ServiceStatusRow(service: model.service) {}, NSSize(width: 300, height: 56), "service-row")
             }
             let files = try FileManager.default.contentsOfDirectory(atPath: output.path).filter { $0.hasSuffix(".png") }

@@ -52,4 +52,4 @@ if ! mv "$stage/OpenFortiDesk.app" "$target"; then
 fi
 installed_ok=true
 echo "Installed: $target. Backup: $backups"
-echo 'Open Gerenciar… → Ativar serviço; approve in System Settings if requested.'
+echo 'Open Configurações… → Serviço privilegiado → Ativar serviço; approve in System Settings if requested.'

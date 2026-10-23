@@ -6,7 +6,7 @@ of, and not affiliated with, Fortinet or the openfortivpn project. No VPN execut
 or Homebrew libraries are bundled in the distributed app.
 
 **Status:** release candidate
-[`v0.3.0-rc.1`](https://github.com/luizmz94/openfortidesk/releases/tag/v0.3.0-rc.1),
+[`v0.3.0-rc.4`](https://github.com/luizmz94/openfortidesk/releases/tag/v0.3.0-rc.4),
 signed with Developer ID and notarized. Full Homebrew upgrade/uninstall lifecycle
 validation is still pending, so it is not yet declared stable.
 
@@ -31,7 +31,8 @@ macOS 26+. Only the host OS/architecture actually checked appears in the release
 report. Intel is not offered until tested; Rosetta cannot run arm64 code on Intel.
 
 Install the signed/notarized app in `/Applications/OpenFortiDesk.app`. Open
-**Gerenciar… → Ativar serviço** and approve the background item in System Settings
+**Configurações… → Serviço privilegiado → Ativar serviço** (the **Gerenciar…** button
+in the sidebar opens the same tab) and approve the background item in System Settings
 → General → Login Items. Return to the app, review **Aprovar openfortivpn…** and
 approve with an administrator account. Each macOS user needs runtime approval.
 Root is needed for openfortivpn/pppd to configure tunnels, routes and DNS; the GUI
@@ -56,6 +57,42 @@ TLS failures and initial connection failures do not loop automatically.
 No OTP/PIN form or client-certificate UI is implemented. Certificate failures require
 explicit review and approval of the profile's trusted digest; TLS is not disabled.
 
+## Settings
+
+**Configurações… (⌘,)** is in the app menu and in the menu bar window. Tabs:
+
+- **Geral:** show the menu bar icon; hide from the Dock when the window is closed
+  (always kept in the Dock while the menu bar icon is off, so the app never becomes
+  invisible); open at login (`SMAppService.mainApp`, only in signed builds).
+- **Atualizações:** update check options and how to update (see below).
+- **Serviço privilegiado:** why the service exists, its state, runtime approval and
+  **Remover serviço** (formerly the Gerenciar… sheet).
+- **Sobre:** version, build, repository, release notes, license and notices.
+
+Preferences live in the app's own `UserDefaults` (`com.luiz.vpngui`); nothing
+sensitive is stored there.
+
+## Update check
+
+The app only checks for and announces new versions; it never downloads, opens or
+runs anything, and never calls `brew`. It sends one anonymous `GET` to
+`https://api.github.com/repos/luizmz94/openfortidesk/releases` (no token, cookies,
+machine identifiers or connection data), at launch, on **Conectar** when the last
+attempt is more than 4 hours old, from an hourly timer with the same interval, and
+when you choose **Verificar atualizações…**. Checking never delays a connection.
+Release candidates are offered by default only when the running version is one.
+Turn off **Verificar automaticamente** in Configurações → Atualizações to stop
+automatic checks; manual checks stay available.
+
+A new version shows a small card in the main window (**Atualizar**, **Depois**,
+**Ver novidades**), a line in the menu bar and a dot on the Atualizações tab. You
+can skip a version. To install it, quit with **Sair** (this disconnects the VPNs),
+then run:
+
+```sh
+brew upgrade --cask luizmz94/openfortidesk/openfortidesk
+```
+
 ## Updates, migration and removal
 
 After publication:
@@ -74,7 +111,8 @@ lands at the same path with the same identifiers and Team, so the registration s
 valid. Before `brew upgrade`, quit the app with **Sair** (this disconnects its VPNs);
 otherwise brew stops and nothing is replaced.
 
-Before `brew uninstall`, open the app and use **Gerenciar… → Remover serviço**, then
+Before `brew uninstall`, open the app and use **Configurações… → Serviço privilegiado
+→ Remover serviço**, then
 quit with **Sair**: the sandbox cannot remove the registration for you. Do not use
 `--force` and do not reopen the app during maintenance. Outside the sandbox (for
 example `./scripts/install.sh`), the same command requests normal quit, waits for
@@ -99,8 +137,8 @@ and quit normally, then retry. Enable the service from the new app afterward.
 No installed personal app is modified by build/test commands.
 
 Normal uninstall retains profiles, Keychain entries and the approved root runtime.
-To remove the root-managed runtime, first use **Gerenciar… → Remover serviço e
-arquivos gerenciados** (administrator authorization). To delete profiles afterward,
+To remove the root-managed runtime, first use **Configurações… → Serviço privilegiado
+→ Remover serviço… → Remover serviço e arquivos gerenciados** (administrator authorization). To delete profiles afterward,
 remove the data directory listed below; delete individual Keychain entries only if
 you intend to discard those credentials. There is no destructive zap stanza.
 
@@ -112,6 +150,7 @@ migration.
 | Data | Location |
 | --- | --- |
 | Profiles (0600) and backups | `~/Library/Application Support/VPNGUI/` |
+| Preferences | `UserDefaults` domain `com.luiz.vpngui` |
 | Passwords | Keychain service `com.luiz.vpngui.password` |
 | SAML cookies | Keychain service `com.luiz.vpngui.saml-cookie` |
 | Protected runtime | `/private/var/db/com.luiz.vpngui.helper` |

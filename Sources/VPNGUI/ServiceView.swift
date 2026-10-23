@@ -28,11 +28,11 @@ struct ServiceStatusRow: View {
     }
 }
 
-/// Management sheet: status, actionable guidance and the explicit actions.
-struct ServiceSheet: View {
+/// Service management (the Serviço privilegiado tab): status, actionable guidance and
+/// the explicit actions. All logic stays in ServiceController.
+struct ServicePanel: View {
     @ObservedObject var model: AppModel
     @ObservedObject private var service: ServiceController
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var confirmingRemoval = false
     init(model: AppModel) {
@@ -41,30 +41,24 @@ struct ServiceSheet: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 14) {
-                    SheetHeader(symbol: service.health.symbol, tone: service.health.tone,
-                                title: service.health.title, subtitle: "Serviço privilegiado · OpenFortiDesk \(HelperConstants.fullVersion)")
-                    Text(service.health.detail).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-                    if let runtime = service.status?.runtime {
-                        runtimeSummary(runtime)
-                    }
-                    if let warning = service.bundleLocationWarning {
-                        InlineNotice(tone: .warning, symbol: "folder.badge.questionmark", title: warning)
-                    }
-                    if let drift = service.sourceDrift {
-                        InlineNotice(tone: .warning, symbol: "arrow.triangle.2.circlepath", title: drift)
-                    }
-                    if let message = service.message {
-                        InlineNotice(tone: .neutral, symbol: "info.circle", title: message)
-                    }
-                    if let inspection = service.inspection { inventory(inspection).transition(.opacity) }
-                }
-                .padding(22)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 14) {
+            SheetHeader(symbol: service.health.symbol, tone: service.health.tone,
+                        title: service.health.title, subtitle: "OpenFortiDesk \(HelperConstants.releaseVersion) · build \(HelperConstants.build)")
+            Text(service.health.detail).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            if let runtime = service.status?.runtime {
+                runtimeSummary(runtime)
             }
-            SheetFooter {
+            if let warning = service.bundleLocationWarning {
+                InlineNotice(tone: .warning, symbol: "folder.badge.questionmark", title: warning)
+            }
+            if let drift = service.sourceDrift {
+                InlineNotice(tone: .warning, symbol: "arrow.triangle.2.circlepath", title: drift)
+            }
+            if let message = service.message {
+                InlineNotice(tone: .neutral, symbol: "info.circle", title: message)
+            }
+            if let inspection = service.inspection { inventory(inspection).transition(.opacity) }
+            HStack(spacing: 8) {
                 GlassGroup(spacing: 8) {
                     HStack(spacing: 8) { actions }
                 }
@@ -72,11 +66,9 @@ struct ServiceSheet: View {
                 if service.busy {
                     ProgressView().controlSize(.small).accessibilityLabel("Em andamento")
                 }
-                Button("Fechar") { dismiss() }.keyboardShortcut(.cancelAction)
             }
         }
-        .frame(width: 620)
-        .frame(minHeight: service.inspection == nil ? 330 : 560)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .animation(Motion.state(reduceMotion), value: service.inspection == nil)
         .confirmationDialog("Remover o serviço privilegiado?", isPresented: $confirmingRemoval) {
             Button("Remover serviço", role: .destructive) { service.remove(includeManagedFiles: false) }

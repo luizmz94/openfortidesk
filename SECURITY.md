@@ -25,6 +25,14 @@ user's inspected openfortivpn installation after administrator authorization.
 The helper verifies its integrity before every start. Initial approval trusts the
 inspected local files; hashes alone do not establish upstream provenance.
 
+Besides the VPN tunnels, the app's only network connection is the update check: an
+anonymous HTTPS `GET` to the public GitHub releases API of luizmz94/openfortidesk
+(ephemeral session, no cookies, cache or token, no redirects, 1 MiB response limit).
+It sends no personal, machine or connection data and can be turned off in
+Configurações → Atualizações. Only release pages of this repository are linked;
+release notes are shown as plain text. Nothing is downloaded, opened or executed:
+installation stays with `brew upgrade` while the app is closed.
+
 Passwords and SAML cookies use Keychain and authenticated XPC, then anonymous
 file descriptors. They are excluded from argv, environment, JSON and logs. TLS is
 not disabled; trusting a certificate digest requires explicit profile approval.
@@ -57,7 +65,8 @@ service cannot be made transactional with an arbitrary external file manager:
 do not reopen the app during package maintenance.
 
 Normal uninstall preserves profiles, Keychain secrets and the root-managed runtime.
-Use Gerenciar → Remover serviço e arquivos gerenciados before uninstall to request
+Use Configurações → Serviço privilegiado → Remover serviço e arquivos gerenciados
+before uninstall to request
 administrator-authorized runtime removal. Do not manually delete root state while
 it is in use. No broad zap stanza deletes credentials. Forks need their own identity
 and notarization. Do not run fork PR workflows with signing/notarization secrets.
