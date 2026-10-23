@@ -5,12 +5,12 @@ using SwiftUI/AppKit and a bundled SMAppService/XPC privileged helper. Independe
 of, and not affiliated with, Fortinet or the openfortivpn project. No VPN executable
 or Homebrew libraries are bundled in the distributed app.
 
-**Status:** first release candidate `v0.3.0-rc.1` in preparation. There is no
-published release or installable tap yet.
+**Status:** release candidate
+[`v0.3.0-rc.1`](https://github.com/luizmz94/openfortidesk/releases/tag/v0.3.0-rc.1),
+signed with Developer ID and notarized. Full Homebrew upgrade/uninstall lifecycle
+validation is still pending, so it is not yet declared stable.
 
 ## Installation and first use
-
-Once a validated release and tap are published, the exact commands will be:
 
 ```sh
 brew install --cask luizmz94/openfortidesk/openfortidesk
@@ -19,10 +19,11 @@ brew tap luizmz94/openfortidesk
 brew install --cask openfortidesk
 ```
 
-The intended app repository is `luizmz94/openfortidesk`; it has not yet been renamed
-or made public. Manual downloads will be offered through that repository's GitHub
-Releases only after signing, notarization, stapling and checksum validation.
-No download URL is advertised before an artifact exists.
+The tap lives at [luizmz94/homebrew-openfortidesk](https://github.com/luizmz94/homebrew-openfortidesk).
+For a manual install, download `OpenFortiDesk-<version>-arm64.zip` and `SHA256SUMS`
+from [Releases](https://github.com/luizmz94/openfortidesk/releases), check the
+checksum with `shasum -a 256 -c SHA256SUMS`, unzip and move the app to
+`/Applications`, and install openfortivpn with `brew install openfortivpn`.
 
 The initial candidate targets **Apple Silicon (arm64)**. The code targets macOS 13+
 with standard material fallbacks before macOS 26; the new Liquid Glass APIs require

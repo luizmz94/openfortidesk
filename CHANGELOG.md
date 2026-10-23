@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0-rc.1 — unreleased
+## 0.3.0-rc.1 — 2026-10-23
 
 - Rename the distributed bundle and visible product to OpenFortiDesk.
 - Preserve legacy app/helper identifiers, profiles and Keychain services.

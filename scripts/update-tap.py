@@ -78,7 +78,8 @@ end
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('tag')
-    parser.add_argument('--tap', type=Path, default=Path(__file__).resolve().parent.parent / 'packaging/homebrew-openfortidesk')
+    parser.add_argument('--tap', type=Path, default=Path(__file__).resolve().parent.parent.parent / 'homebrew-openfortidesk',
+                        help='checkout of luizmz94/homebrew-openfortidesk (default: next to this repository)')
     args = parser.parse_args()
     if not re.fullmatch(r'v\d+\.\d+\.\d+(?:-rc\.\d+)?', args.tag):
         parser.error('Invalid release tag')
