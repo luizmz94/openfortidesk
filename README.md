@@ -1,0 +1,129 @@
+# OpenFortiDesk
+
+Native macOS GUI for the original [openfortivpn](https://github.com/adrienverge/openfortivpn),
+using SwiftUI/AppKit and a bundled SMAppService/XPC privileged helper. Independent
+of, and not affiliated with, Fortinet or the openfortivpn project. No VPN executable
+or Homebrew libraries are bundled in the distributed app.
+
+**Status:** first release candidate `v0.3.0-rc.1` in preparation. There is no
+published release or installable tap yet.
+
+## Installation and first use
+
+Once a validated release and tap are published, the exact commands will be:
+
+```sh
+brew install --cask luizmz94/openfortidesk/openfortidesk
+# Equivalent:
+brew tap luizmz94/openfortidesk
+brew install --cask openfortidesk
+```
+
+The intended app repository is `luizmz94/openfortidesk`; it has not yet been renamed
+or made public. Manual downloads will be offered through that repository's GitHub
+Releases only after signing, notarization, stapling and checksum validation.
+No download URL is advertised before an artifact exists.
+
+The initial candidate targets **Apple Silicon (arm64)**. The code targets macOS 13+
+with standard material fallbacks before macOS 26; the new Liquid Glass APIs require
+macOS 26+. Only the host OS/architecture actually checked appears in the release
+report. Intel is not offered until tested; Rosetta cannot run arm64 code on Intel.
+
+Install the signed/notarized app in `/Applications/OpenFortiDesk.app`. Open
+**Gerenciar… → Ativar serviço** and approve the background item in System Settings
+→ General → Login Items. Return to the app, review **Aprovar openfortivpn…** and
+approve with an administrator account. Each macOS user needs runtime approval.
+Root is needed for openfortivpn/pppd to configure tunnels, routes and DNS; the GUI
+always runs as a normal user. The runtime is copied to a protected root-owned
+location, inventoried and integrity-checked before every connection.
+
+## Usage
+
+Use **+** to save a host, port, username and password or SAML authentication.
+Passwords are stored in Keychain. Each profile has its own session, timer and
+in-memory log. Multiple sessions may coexist; overlapping routes and DNS are not
+resolved automatically. Closing the window (X/⌘W) leaves menu bar and VPNs running.
+**Sair/⌘Q** asks to disconnect active sessions and waits for cleanup.
+
+SAML opens the HTTPS gateway URL in your browser. Logins queue on callback port
+8020. Cached cookies stay in Keychain for at most 30 minutes and remain valid only
+as allowed by the gateway. The app does not inject a username into a signed SAML
+URL. A rejected cookie permits one fresh browser login. Reconnect after a previously
+established tunnel is limited to delays of 10, 20 and 40 seconds; rejected credentials,
+TLS failures and initial connection failures do not loop automatically.
+
+No OTP/PIN form or client-certificate UI is implemented. Certificate failures require
+explicit review and approval of the profile's trusted digest; TLS is not disabled.
+
+## Updates, migration and removal
+
+After publication:
+
+```sh
+brew upgrade --cask luizmz94/openfortidesk/openfortidesk
+brew uninstall --cask luizmz94/openfortidesk/openfortidesk
+```
+
+Upgrade/reinstall/uninstall call the installed app's restricted normal-user
+maintenance command **before** bundle removal. It requests normal quit, respects
+cancellation and waits for cleanup. The authenticated helper must prove global idle,
+block new starts and successfully unregister. Refusal, timeout, another user's
+session, old protocol or unregister error aborts the operation. Do not use `--force`
+and do not reopen the app during maintenance. This lifecycle still requires isolated
+VM validation before a stable release.
+
+For manual migration from `/Applications/VPNGUI.app`, run `./scripts/install.sh`
+after building/signing/notarizing. The script stages and verifies the new bundle,
+backs up both possible installed names in Application Support/VPNGUI/Backups and
+requires cleanup/unregister before replacing either bundle. If an old helper does
+not support the maintenance contract, open the old app, use **Remover serviço…**
+and quit normally, then retry. Enable the service from the new app afterward.
+No installed personal app is modified by build/test commands.
+
+Normal uninstall retains profiles, Keychain entries and the approved root runtime.
+To remove the root-managed runtime, first use **Gerenciar… → Remover serviço e
+arquivos gerenciados** (administrator authorization). To delete profiles afterward,
+remove the data directory listed below; delete individual Keychain entries only if
+you intend to discard those credentials. There is no destructive zap stanza.
+
+Compatibility deliberately preserves `com.luiz.vpngui`, the helper/supervisor
+identifiers, Mach service, authorization right and plist name. The internal GUI
+executable remains VPNGUI. Renaming these would require a separate data/service
+migration.
+
+| Data | Location |
+| --- | --- |
+| Profiles (0600) and backups | `~/Library/Application Support/VPNGUI/` |
+| Passwords | Keychain service `com.luiz.vpngui.password` |
+| SAML cookies | Keychain service `com.luiz.vpngui.saml-cookie` |
+| Protected runtime | `/private/var/db/com.luiz.vpngui.helper` |
+| Logs | Memory only; bounded to 1,500 lines per session |
+
+## Development and release
+
+Use Xcode with macOS 26 SDK or newer. Preparation used Swift 6.4/macOS 27 SDK.
+
+```sh
+brew install openfortivpn
+./scripts/build.sh
+./scripts/test.sh
+./build/0.3.0/OpenFortiDesk.app/Contents/MacOS/VPNGUI --release-checks
+```
+
+Build outputs are isolated under `build/<version>`; set OUTPUT_DIR to preserve other
+bundles. Use ARCH=arm64 or ARCH=x86_64 to compile explicitly. Compiling a slice is
+not proof it runs. Ad hoc builds render and test but fail closed for privileged
+operations; they are not functional VPN releases. The full suite needs graphical
+login, Keychain and anonymous XPC. Additional `--release-checks` do not replace it.
+
+For your own distribution, provide SIGNING_IDENTITY and optional TEAM_ID to
+`build.sh`, then NOTARY_PROFILE to `notarize.sh`. These inputs reference your own
+Keychain identity/profile. App, helper and supervisor must share a verified Apple
+Team. `package-release.sh` accepts only Developer ID signed, timestamped, hardened,
+notarized/stapled arm64 bundles and computes SHA-256 after final ZIP packaging.
+`publish-release.sh` gates draft creation on a clean default branch, full test report,
+audit and successful CI. `update-tap.py` generates a versioned cask only from a
+published, verified release. No private key export or signing secret in CI is needed.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md),
+[LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

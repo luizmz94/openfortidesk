@@ -1,0 +1,34 @@
+.build/
+build/
+.DS_Store
+.swiftpm/
+.worktrees/
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.keychain
+*.keychain-db
+*.mobileprovision
+*.provisionprofile
+.claude/
+skills-lock.json
+
+# Local credentials, VPN exports and agent settings
+.codex/
+.agents/
+*.p8
+*.p12
+*.pfx
+*.ovpn
+*.conf.local
+*.pem
+*.key
+.envrc
+
+__pycache__/
+*.py[cod]
+
+# Internal working specs; kept out of the public repository
+specs/

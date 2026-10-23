@@ -1,0 +1,540 @@
+import Foundation
+import AppKit
+import Darwin
+import VPNHelperShared
+
+enum ConnectionState: String {
+    case disconnected = "Desconectada"
+    case authorizing = "Iniciando"
+    case waitingForSAML = "Na fila do SAML"
+    case connecting = "Conectando"
+    case authenticating = "Aguardando SAML"
+    case connected = "Conectada"
+    case reconnecting = "Reconectando"
+    case disconnecting = "Desconectando"
+    case failed = "Falha"
+    var active: Bool { ![.disconnected, .failed].contains(self) }
+}
+
+// Gateways commonly return to a fixed localhost:8020, regardless of --saml-login.
+// Serialize only browser handshakes; established tunnels remain independent.
+struct SAMLLoginGate {
+    private(set) var owner: UUID?
+    private(set) var waiting: [UUID] = []
+    mutating func acquire(_ id: UUID) -> Bool {
+        if owner == id { return true }
+        if owner == nil { owner = id; return true }
+        if !waiting.contains(id) { waiting.append(id) }
+        return false
+    }
+    mutating func release(_ id: UUID) -> UUID? {
+        waiting.removeAll { $0 == id }
+        guard owner == id else { return nil }
+        owner = waiting.isEmpty ? nil : waiting.removeFirst()
+        return owner
+    }
+}
+
+struct OutputRules {
+    static func certificateDigest(_ line: String) -> String? {
+        guard let range = line.range(of: #"(?i)^ERROR:\s+(?:--trusted-cert\s+|trusted-cert\s*=\s*)([0-9a-f]{64})\s*$"#, options: .regularExpression) else { return nil }
+        let value = String(line[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return String(value.suffix(64)).lowercased()
+    }
+    static func safe(_ line: String, secret: String?) -> String {
+        // These upstream errors mention secrets generically. Preserve a fixed diagnostic,
+        // never any trailing server response or credential supplied on the original line.
+        let diagnostics: [(String, String)] = [
+            (#"^ERROR:\s+Could not authenticate to gateway\."#,
+             "ERROR: Falha na autenticação no gateway. Confira usuário, senha e os requisitos de autenticação do servidor."),
+            (#"^ERROR:\s+Failed to retrieve SAML cookie"#,
+             "ERROR: Falha ao concluir a autenticação SAML. O callback do navegador não foi recebido corretamente na porta local 8020."),
+            (#"^ERROR:\s+Finally failed to retrieve SAML authentication token"#,
+             "ERROR: O tempo de espera pelo retorno SAML do navegador terminou."),
+            (#"^ERROR:\s+No password given"#,
+             "ERROR: A senha da VPN não foi fornecida."),
+            (#"^ERROR:\s+No cookie given"#,
+             "ERROR: A sessão de autenticação não foi fornecida.")
+        ]
+        for (pattern, diagnostic) in diagnostics {
+            if line.range(of: pattern, options: .regularExpression) != nil { return diagnostic }
+        }
+        let sensitive = #"(?i)(password|passwd|senha|cookie|token|authorization|samlresponse|assertion|secret|credential|bearer|otp\s*[:=])"#
+        if line.range(of: sensitive, options: .regularExpression) != nil {
+            return "[mensagem com credenciais ocultada]"
+        }
+        var result = line
+        if let secret, !secret.isEmpty { result = result.replacingOccurrences(of: secret, with: "[oculto]") }
+        // Authentication URLs can contain session material even with an unknown parameter name.
+        result = result.replacingOccurrences(of: #"https?://[^\s'\"<>]+"#,
+                                             with: "[URL ocultada]", options: .regularExpression)
+        return String(result.prefix(4000))
+    }
+    static func authenticationURL(_ line: String, connection: Connection) -> URL? {
+        guard line.contains("Authenticate at"),
+              let range = line.range(of: #"https://[^\s'\"<>]+"#, options: .regularExpression),
+              let url = URL(string: String(line[range])),
+              url.scheme == "https", url.user == nil, url.password == nil,
+              let host = url.host,
+              host.lowercased() == connection.server.trimmingCharacters(in: CharacterSet(charactersIn: "[]")).lowercased(),
+              (url.port ?? 443) == connection.port,
+              url.path == "/remote/saml/start" else { return nil }
+        return url
+    }
+}
+
+@MainActor
+final class Session: ObservableObject, Identifiable {
+    let id: UUID
+    @Published var state: ConnectionState = .disconnected
+    @Published var logs: [String] = []
+    @Published var authenticationRejected = false
+    @Published var connectedAt: Date?
+    @Published var suggestedCertificate: String?
+    var certificateValidationFailed = false
+    var retryBlocked = false
+    private var conflictingCertificates = false
+    var wasConnected = false
+    var reconnectAttempts = 0
+    var reconnectTask: DispatchWorkItem?
+    static func duration(since start: Date, at now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(start)))
+        return String(format: "%02d:%02d:%02d", seconds / 3600, (seconds / 60) % 60, seconds % 60)
+    }
+    var retryDelay: TimeInterval? {
+        guard wasConnected, !wantsDisconnect, !authenticationRejected,
+              !certificateValidationFailed, !retryBlocked, reconnectAttempts < 3 else { return nil }
+        return TimeInterval(10 * (1 << reconnectAttempts))
+    }
+    var pid: Int32?
+    /// Opaque identifier of this session in the privileged helper.
+    var token: String?
+    var lastSequence: UInt64 = 0
+    var samlPort: Int?
+    var wantsDisconnect = false
+    var openedURL = false
+    var secret: String?
+    var generation = UUID()
+    // SAML session reuse for the current client process only.
+    var cookieMode: SAMLCookieMode = .none
+    var cookieCandidate: String?
+    var cookieConflict = false
+    var cookieRejected = false
+    var cookieTransportFailure = false
+    var reachedGateway = false
+    var tunnelUp = false
+    var tunnelHandled = false
+    init(id: UUID) { self.id = id }
+    func log(_ text: String) {
+        logs.append(OutputRules.safe(text, secret: secret))
+        if logs.count > 1500 { logs.removeFirst(logs.count - 1500) }
+    }
+    func clearLogs() { logs.removeAll(keepingCapacity: true) }
+    func begin(retrying: Bool = false) {
+        reconnectTask?.cancel(); reconnectTask = nil
+        if !retrying { wasConnected = false; reconnectAttempts = 0 }
+        connectedAt = nil
+        suggestedCertificate = nil
+        certificateValidationFailed = false
+        retryBlocked = false
+        conflictingCertificates = false
+        state = .authorizing
+        wantsDisconnect = false
+        openedURL = false
+        pid = nil
+        token = nil
+        lastSequence = 0
+        generation = UUID()
+        cookieMode = .none
+        cookieCandidate = nil
+        cookieConflict = false
+        cookieRejected = false
+        cookieTransportFailure = false
+        reachedGateway = false
+        tunnelUp = false
+        tunnelHandled = false
+        log("Iniciando conexão. Rotas e DNS serão tratados pelo openfortivpn; redes sobrepostas podem gerar conflitos.")
+    }
+    func accept(_ line: String, connection: Connection, openBrowser: (URL) -> Void) {
+        if line.range(of: #"(?i)^ERROR:.*(?:certificate|\bTLS\b|\bSSL\b|authenticate|SAML|No password|No cookie|\bOTP\b)"#, options: .regularExpression) != nil {
+            retryBlocked = true
+        }
+        if line.range(of: #"^ERROR:\s+Gateway certificate validation failed"#, options: .regularExpression) != nil {
+            certificateValidationFailed = true
+        }
+        if certificateValidationFailed, let digest = OutputRules.certificateDigest(line), !conflictingCertificates {
+            if let previous = suggestedCertificate, previous != digest {
+                conflictingCertificates = true; suggestedCertificate = nil
+            } else { suggestedCertificate = digest }
+        }
+        if cookieMode == .reuse {
+            // A refused saved session is not a credential failure: never trigger the review lock.
+            if !tunnelUp && SAMLCookieRules.isRejection(line) { cookieRejected = true }
+            if SAMLCookieRules.isTransportFailure(line) { cookieTransportFailure = true }
+            if line.range(of: #"^INFO:\s+Connected to gateway\."#, options: .regularExpression) != nil { reachedGateway = true }
+        } else if line.range(of: #"^ERROR:\s+Could not authenticate to gateway\."#, options: .regularExpression) != nil {
+            authenticationRejected = true
+        }
+        if line.contains("Tunnel is up and running") && !wantsDisconnect {
+            if connectedAt == nil { connectedAt = Date() }
+            wasConnected = true
+            tunnelUp = true
+            state = .connected
+        }
+        if connection.authentication == .saml, !openedURL,
+           let url = OutputRules.authenticationURL(line, connection: connection) {
+            openedURL = true
+            if !wantsDisconnect { state = .authenticating; openBrowser(url) }
+        }
+        log(line)
+    }
+    func finish(exit: Int?, error: String? = nil) {
+        if let connectedAt, Date().timeIntervalSince(connectedAt) >= 60 { reconnectAttempts = 0 }
+        connectedAt = nil
+        if let error { log(error) }
+        if wantsDisconnect && exit != nil {
+            state = .disconnected
+        } else if exit == 0 && error == nil { state = .disconnected }
+        else { state = .failed }
+        if let exit { log("Processo encerrado (código \(exit)).") }
+        pid = nil
+        token = nil
+        samlPort = nil
+        secret = nil
+        cookieCandidate = nil
+    }
+}
+
+
+@MainActor
+final class VPNManager: ObservableObject {
+    @Published var sessions: [UUID: Session] = [:]
+    private var samlGate = SAMLLoginGate()
+    private var pendingSAML: [UUID: Connection] = [:]
+    /// Connection of a running cookie attempt, needed for its single SAML fallback.
+    private var cookieAttempts: [UUID: Connection] = [:]
+    /// Profiles of running sessions, to interpret their events.
+    private var running: [UUID: Connection] = [:]
+    /// Helper token → session.
+    private var tokens: [String: UUID] = [:]
+    var cookies = SAMLCookieStore()
+    /// The privileged helper (production) or nil.
+    weak var transport: SessionTransport?
+    /// Local checks only: replaces the helper with an in-process recorder.
+    struct LaunchHarness {
+        var help: String
+        var launched: (Session, ConnectionRequest, LaunchPlan) -> Void
+    }
+    var harness: LaunchHarness?
+    var changed: (() -> Void)?
+    var retry: ((UUID) -> Void)?
+    var anyActive: Bool { sessions.values.contains { $0.state.active } }
+    func session(_ id: UUID) -> Session {
+        if let session = sessions[id] { return session }
+        let session = Session(id: id)
+        sessions[id] = session
+        return session
+    }
+    func connect(_ connection: Connection, password: String?, retrying: Bool = false) {
+        let session = session(connection.id)
+        guard !session.state.active || (retrying && session.state == .reconnecting) else { return }
+        session.begin(retrying: retrying)
+        session.secret = password
+        cookieAttempts.removeValue(forKey: connection.id)
+        if connection.authentication == .saml, let cookie = savedCookie(for: connection, session: session) {
+            // One attempt without browser or callback port; the gate is not needed.
+            session.cookieMode = .reuse
+            cookieAttempts[connection.id] = connection
+            session.log("Tentando reaproveitar a sessão SAML recente, sem abrir o navegador. Se o gateway recusar, um único login SAML será iniciado.")
+            start(session, connection: connection, password: nil, cookie: cookie)
+            return
+        }
+        queueOrStart(session, connection: connection, password: password)
+    }
+    private func savedCookie(for connection: Connection, session: Session) -> String? {
+        switch cookies.lookup(connection) {
+        case .cookie(let cookie): return cookie
+        case .none: return nil
+        case .failure:
+            session.log("Não foi possível consultar a sessão SAML salva no Keychain; usando o login SAML normal.")
+            return nil
+        }
+    }
+    private func queueOrStart(_ session: Session, connection: Connection, password: String?) {
+        if connection.authentication == .saml && !samlGate.acquire(connection.id) {
+            session.state = .waitingForSAML
+            pendingSAML[connection.id] = connection
+            session.log("Aguardando a autenticação SAML anterior liberar o callback local 8020. Túneis já conectados continuam ativos.")
+            changed?()
+            return
+        }
+        start(session, connection: connection, password: password)
+    }
+    private func start(_ session: Session, connection: Connection, password: String?, cookie: String? = nil) {
+        session.state = .authorizing
+        changed?()
+        let capabilities: RuntimeCapabilities
+        if let harness {
+            capabilities = RuntimeCapabilities(help: harness.help)
+        } else {
+            guard let transport else { end(session, exit: nil, error: "Serviço privilegiado indisponível."); return }
+            if let reason = transport.unavailableReason { end(session, exit: nil, error: reason); return }
+            guard let available = transport.capabilities else {
+                end(session, exit: nil, error: "O serviço não informou o openfortivpn aprovado."); return
+            }
+            capabilities = available
+        }
+        prepare(session, connection: connection, password: password, cookie: cookie, capabilities: capabilities)
+    }
+    private func prepare(_ session: Session, connection: Connection, password: String?, cookie: String?,
+                         capabilities: RuntimeCapabilities) {
+        if session.wantsDisconnect { end(session, exit: 0); return }
+        let plan = LaunchPlan.make(authentication: connection.authentication, capabilities: capabilities, cookieAvailable: cookie != nil)
+        if cookie != nil && plan.mode != .reuse {
+            // Incompatible client: keep the cache untouched and use the regular SAML queue.
+            session.cookieMode = .none
+            cookieAttempts.removeValue(forKey: session.id)
+            session.log("Esta versão do openfortivpn não lê a sessão SAML pela entrada padrão; usando o login SAML normal.")
+            queueOrStart(session, connection: connection, password: password)
+            return
+        }
+        if connection.authentication == .saml {
+            if !capabilities.samlPort && plan.mode != .reuse {
+                end(session, exit: nil, error: "Esta versão não documenta --saml-login[=port]; atualize o openfortivpn para usar a porta de callback SAML explícita.")
+                return
+            }
+            if plan.mode == .none {
+                session.log("Esta versão do openfortivpn não permite guardar a sessão SAML; cada conexão abrirá o navegador.")
+            }
+            if plan.mode != .reuse {
+                // The callback port is bound by the original client inside the helper; no
+                // unprivileged pre-check (it could refuse a previous listener in TIME_WAIT).
+                session.samlPort = HelperConstants.samlPort
+                session.log("Autenticação SAML na porta local \(HelperConstants.samlPort).")
+            }
+        }
+        let request: ConnectionRequest
+        do {
+            let c = try connection.validated()
+            request = ConnectionRequest(connectionID: c.id, host: c.server, port: c.port, username: c.username,
+                                        authentication: c.authentication, trustedCertificate: c.trustedCertificate,
+                                        password: c.authentication == .password ? password : nil,
+                                        mode: plan.mode, cookie: plan.mode == .reuse ? cookie : nil)
+        } catch { end(session, exit: nil, error: error.localizedDescription); return }
+        session.cookieMode = plan.mode
+        running[session.id] = connection
+        if let harness { harness.launched(session, request, plan); return }
+        launch(session, request: request, plan: plan)
+    }
+    private func launch(_ session: Session, request: ConnectionRequest, plan: LaunchPlan) {
+        guard let transport else { end(session, exit: nil, error: "Serviço privilegiado indisponível."); return }
+        let generation = session.generation
+        transport.start(request) { [weak self] result in
+            guard let self else { return }
+            guard session.generation == generation, session.state.active else {
+                // Superseded while starting: never leave an orphan session in the helper.
+                if case .success((let token, _)) = result { transport.stop(token) { _ in } }
+                return
+            }
+            switch result {
+            case .success((let token, let confirmed)):
+                session.token = token
+                self.tokens[token] = session.id
+                if confirmed != plan { session.log("O serviço ajustou o plano de execução ao openfortivpn aprovado.") }
+                if session.wantsDisconnect { self.interrupt(session) }
+            case .failure(let failure):
+                self.end(session, exit: nil, error: failure.message)
+            }
+        }
+    }
+    /// Ordered events of one helper session. Unknown tokens and replays are ignored.
+    func receive(_ batch: EventBatch) {
+        guard let id = tokens[batch.token], let session = sessions[id], session.token == batch.token,
+              let connection = running[id] else { return }
+        let generation = session.generation
+        for event in batch.events {
+            guard session.generation == generation, session.token == batch.token else { return }
+            if event.sequence <= session.lastSequence { continue }
+            if event.sequence != session.lastSequence + 1 {
+                session.log("[eventos fora de ordem do serviço descartados]")
+            }
+            session.lastSequence = event.sequence
+            switch event.kind {
+            case .started(let pid):
+                session.pid = pid
+                if !session.wantsDisconnect && session.state == .authorizing { session.state = .connecting }
+                changed?()
+            case .line(let line): receive(.line(line), session: session, connection: connection, generation: generation)
+            case .cookie(let cookie): receive(.cookie(cookie), session: session, connection: connection, generation: generation)
+            case .overflow: receive(.overflow, session: session, connection: connection, generation: generation)
+            case .dropped(let count):
+                session.log("[\(count) linha(s) de log descartada(s): a interface não acompanhou a saída]")
+            case .exited(let code):
+                tokens.removeValue(forKey: batch.token)
+                end(session, exit: code)
+            case .failed(let message):
+                tokens.removeValue(forKey: batch.token)
+                end(session, exit: nil, error: message)
+            }
+        }
+    }
+    /// The XPC connection was lost. The helper (or the supervisor, on EOF) stops these
+    /// sessions; the app never presumes a tunnel is still up and never reconnects by itself.
+    func transportLost() {
+        for (token, id) in tokens {
+            guard let session = sessions[id], session.token == token else { continue }
+            end(session, exit: nil, error: "Canal com o serviço privilegiado perdido. O supervisor encerra o túnel ao perder o canal; nenhuma reconexão automática foi feita.")
+        }
+        tokens.removeAll()
+    }
+    func receive(_ event: OutputLineFilter.Event, session: Session, connection: Connection, generation: UUID) {
+        switch event {
+        case .line(let line): receive(line, session: session, connection: connection, generation: generation)
+        case .overflow:
+            guard session.generation == generation else { return }
+            session.log("[linha excessivamente longa descartada]")
+        case .cookie(let cookie):
+            guard session.generation == generation, session.cookieMode == .capture, !session.tunnelUp else { return }
+            if session.cookieConflict { return }
+            if let candidate = session.cookieCandidate, candidate != cookie {
+                // Ambiguous output: never guess which session belongs to the tunnel.
+                session.cookieConflict = true
+                session.cookieCandidate = nil
+            } else { session.cookieCandidate = cookie }
+        }
+    }
+    func receive(_ line: String, session: Session, connection: Connection, generation: UUID) {
+        guard session.generation == generation else { return }
+        session.accept(line, connection: connection) { url in
+            if NSWorkspace.shared.open(url) {
+                session.log("Navegador aberto. Conclua o login; aguardando o retorno local na porta 8020.")
+            } else { session.log("Não foi possível abrir o navegador padrão.") }
+        }
+        // run_tunnel connects to the gateway only after wait_for_http_request
+        // has consumed the callback and closed its listener.
+        if connection.authentication == .saml && line.range(of: #"^INFO:\s+Connected to gateway\."#, options: .regularExpression) != nil {
+            releaseSAML(session.id)
+        }
+        if session.tunnelUp && !session.tunnelHandled {
+            session.tunnelHandled = true
+            tunnelEstablished(session, connection: connection)
+        }
+        changed?()
+    }
+    /// The candidate cookie becomes cache only after the tunnel is confirmed.
+    private func tunnelEstablished(_ session: Session, connection: Connection) {
+        switch session.cookieMode {
+        case .reuse:
+            cookieAttempts.removeValue(forKey: session.id)
+            session.log("Sessão SAML reaproveitada sem abrir o navegador.")
+        case .capture:
+            defer { session.cookieCandidate = nil }
+            if let candidate = session.cookieCandidate, !session.cookieConflict {
+                do {
+                    try cookies.save(candidate, for: connection)
+                    session.log("Sessão SAML guardada no Keychain por até 30 minutos para a próxima conexão. O gateway pode recusá-la antes disso.")
+                } catch {
+                    session.log("Não foi possível guardar a sessão SAML no Keychain; a próxima conexão usará o navegador.")
+                }
+            } else if session.cookieConflict {
+                session.log("A saída do openfortivpn informou sessões diferentes; nenhuma foi guardada.")
+            } else {
+                session.log("O openfortivpn instalado não informou a sessão SAML; a próxima conexão usará o navegador.")
+            }
+        case .none: break
+        }
+    }
+    func disconnect(_ id: UUID) {
+        let session = session(id)
+        guard session.state.active, !session.wantsDisconnect else { return }
+        session.reconnectTask?.cancel(); session.reconnectTask = nil
+        if session.state == .reconnecting || session.state == .waitingForSAML {
+            session.wantsDisconnect = true
+            self.end(session, exit: 0)
+            return
+        }
+        session.wantsDisconnect = true
+        session.state = .disconnecting
+        session.log("Solicitando encerramento normal e aguardando a limpeza de rotas e DNS…")
+        if session.token != nil { interrupt(session) }
+        changed?()
+    }
+    private func interrupt(_ session: Session) {
+        guard let token = session.token, let transport else { return }
+        let generation = session.generation
+        transport.stop(token) { failure in
+            guard let failure, session.generation == generation, session.token == token else { return }
+            if failure.code == .unknownSession { return } // Already finishing; its exit event follows.
+            session.log("Não foi possível enviar o pedido de encerramento ao serviço (\(failure.message)). Aguardando a saída; tente novamente.")
+            session.wantsDisconnect = false
+            self.changed?()
+        }
+    }
+    func end(_ session: Session, exit: Int?, error: String? = nil) {
+        if let token = session.token { tokens.removeValue(forKey: token) }
+        let fallback = cookieFallback(session, exit: exit)
+        session.finish(exit: exit, error: error)
+        running.removeValue(forKey: session.id)
+        releaseSAML(session.id)
+        if let connection = fallback {
+            // The cookie process has exited and its supervisor confirmed cleanup.
+            // Exactly one regular SAML login follows; reconnect counters are preserved.
+            session.begin(retrying: true)
+            queueOrStart(session, connection: connection, password: nil)
+            changed?()
+            return
+        }
+        // Retry only after a tunnel actually worked and its process confirmed exit.
+        // Authentication/TLS failures and explicit disconnects always stop retries.
+        if exit != nil, retry != nil, let delay = session.retryDelay {
+            session.reconnectAttempts += 1
+            session.state = .reconnecting
+            session.log("Conexão caiu. Nova tentativa \(session.reconnectAttempts)/3 em \(Int(delay)) segundos. Desconectar cancela a reconexão.")
+            let generation = session.generation
+            let task = DispatchWorkItem { [weak self, weak session] in
+                guard let self, let session, session.generation == generation,
+                      session.state == .reconnecting, !session.wantsDisconnect else { return }
+                self.retry?(session.id)
+            }
+            session.reconnectTask = task
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: task)
+        }
+        changed?()
+    }
+    /// Decides what a finished cookie attempt means. Only an explicit gateway refusal
+    /// triggers the single SAML fallback; cancellation, authorization and network/TLS
+    /// failures never do.
+    private func cookieFallback(_ session: Session, exit: Int?) -> Connection? {
+        guard session.cookieMode == .reuse, let attempt = cookieAttempts.removeValue(forKey: session.id) else { return nil }
+        guard !session.tunnelUp, !session.wantsDisconnect, exit != nil else { return nil }
+        if session.cookieRejected && !session.cookieTransportFailure {
+            try? cookies.delete(session.id)
+            session.log("O gateway recusou a sessão SAML salva (expirada ou encerrada). Ela foi descartada; iniciando um login SAML no navegador.")
+            return attempt
+        }
+        if session.reachedGateway && !session.cookieTransportFailure {
+            try? cookies.delete(session.id)
+            session.log("A sessão SAML salva não foi confirmada pelo gateway e foi descartada. A próxima conexão usará o navegador.")
+        } else {
+            session.log("A tentativa com a sessão SAML salva falhou por rede ou TLS; isso não indica sessão inválida.")
+        }
+        return nil
+    }
+    func retryFailed(_ id: UUID, message: String) {
+        let session = session(id)
+        session.reconnectTask?.cancel(); session.reconnectTask = nil
+        session.finish(exit: nil, error: message)
+        changed?()
+    }
+    private func releaseSAML(_ id: UUID) {
+        pendingSAML.removeValue(forKey: id)
+        guard let next = samlGate.release(id), let connection = pendingSAML.removeValue(forKey: next) else { return }
+        start(session(next), connection: connection, password: nil, cookie: nil)
+    }
+    func disconnectAll() {
+        let waiting = sessions.values.filter { $0.state == .waitingForSAML }.map(\.id)
+        for id in waiting { disconnect(id) }
+        let active = sessions.values.filter { $0.state.active }.map(\.id)
+        for id in active { disconnect(id) }
+    }
+}

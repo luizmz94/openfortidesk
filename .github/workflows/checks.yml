@@ -1,0 +1,26 @@
+name: macOS checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  local-checks:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          swift --version
+          xcrun --show-sdk-version
+          brew install openfortivpn
+      - name: Build and run the actual GUI, Keychain and XPC checks
+        run: ./scripts/test.sh
+      - name: Shell syntax
+        run: for script in scripts/*.sh; do bash -n "$script"; done
