@@ -1,4 +1,10 @@
-OpenFortiDesk initial release candidate: macOS 13+, Apple Silicon arm64 only.
+OpenFortiDesk release candidate: macOS 13+, Apple Silicon arm64 only.
+
+Changes: the SAML browser login after a refused saved session is no longer
+rejected as a duplicate session, and a refused saved session that the Keychain
+will not delete (written by VPNGUI.app) is not retried on every connection.
+See CHANGELOG.md.
+
 Developer ID signed, hardened, timestamped, notarized and stapled.
 First launch requires macOS background-service approval and administrator approval
 of the protected openfortivpn runtime. openfortivpn is an external Homebrew dependency.

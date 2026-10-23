@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0-rc.2 — unreleased
+## 0.3.0-rc.2 — 2026-10-23
 
 - Fix the SAML fallback after a refused saved session: the helper no longer rejects
   the browser login as a duplicate while the previous attempt's final events are
