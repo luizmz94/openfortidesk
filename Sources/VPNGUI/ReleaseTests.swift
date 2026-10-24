@@ -14,9 +14,9 @@ enum ReleaseTests {
         }
         test("Bundle name, preserved identifiers, version, icon and all three binaries") {
             let app = Bundle.main
-            try TestSupport.require(app.bundleURL.lastPathComponent == "OpenFortiDesk.app", "Wrong bundle name")
+            try TestSupport.require(app.bundleURL.lastPathComponent == "TunnelMac.app", "Wrong bundle name")
             try TestSupport.require(app.bundleIdentifier == "com.luiz.vpngui", "App identity changed")
-            try TestSupport.require(app.object(forInfoDictionaryKey: "CFBundleName") as? String == "OpenFortiDesk", "Product name")
+            try TestSupport.require(app.object(forInfoDictionaryKey: "CFBundleName") as? String == "TunnelMac", "Product name")
             try TestSupport.require(app.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String == HelperConstants.version, "Version mismatch")
             for leaf in ["VPNGUI", "VPNHelper", "VPNSupervisor"] {
                 try TestSupport.require(FileManager.default.isExecutableFile(atPath: app.bundleURL.appendingPathComponent("Contents/MacOS/" + leaf).path), "Missing binary")

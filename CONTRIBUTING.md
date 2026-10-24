@@ -1,6 +1,6 @@
 # Contributing
 
-OpenFortiDesk uses SwiftUI/AppKit, SMAppService and authenticated XPC. The original
+TunnelMac uses SwiftUI/AppKit, SMAppService and authenticated XPC. The original
 openfortivpn remains an external dependency. Do not implement a VPN protocol or
 bundle a fork of its executable.
 

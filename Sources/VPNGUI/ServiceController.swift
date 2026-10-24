@@ -74,7 +74,7 @@ final class ServiceController: ObservableObject, SessionTransport {
             case .checking: return "Consultando o registro e o serviço privilegiado."
             case .unsigned(let reason): return reason + " Veja o guia de ativação no README."
             case .notRegistered: return "Use Ativar serviço. O macOS pedirá a aprovação do item em Ajustes do Sistema › Geral › Itens de Início."
-            case .requiresApproval: return "Habilite OpenFortiDesk em Ajustes do Sistema › Geral › Itens de Início › Permitir em segundo plano e volte ao app."
+            case .requiresApproval: return "Habilite TunnelMac em Ajustes do Sistema › Geral › Itens de Início › Permitir em segundo plano e volte ao app."
             case .notFound: return "O bundle não contém o LaunchDaemon esperado. Use o app gerado por scripts/build.sh."
             case .unresponsive(let reason): return "O serviço está habilitado, mas o handshake autenticado falhou: \(reason)"
             case .incompatible(let reason): return reason
@@ -223,7 +223,7 @@ final class ServiceController: ObservableObject, SessionTransport {
         do {
             try registrar.register()
             message = registrar.status == .requiresApproval
-                ? "Serviço registrado. Aprove OpenFortiDesk em Ajustes do Sistema › Geral › Itens de Início e volte ao app."
+                ? "Serviço registrado. Aprove TunnelMac em Ajustes do Sistema › Geral › Itens de Início e volte ao app."
                 : "Serviço registrado."
         } catch {
             let code = (error as NSError).code

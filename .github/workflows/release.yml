@@ -36,7 +36,7 @@ jobs:
     steps:
       # the runner context only exists inside steps
       - run: |
-          echo "KEYCHAIN=$RUNNER_TEMP/openfortidesk-release.keychain-db" >> "$GITHUB_ENV"
+          echo "KEYCHAIN=$RUNNER_TEMP/tunnelmac-release.keychain-db" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$RUNNER_TEMP/build" >> "$GITHUB_ENV"
           echo "RELEASE_DIR=$RUNNER_TEMP/release" >> "$GITHUB_ENV"
 
@@ -78,7 +78,7 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$KEYCHAIN" > /dev/null
           # codesign only finds identities in the search list; restored in the cleanup.
           security list-keychains -d user -s "$KEYCHAIN" $(tr -d '"' < "$RUNNER_TEMP/keychains-before")
-          xcrun notarytool store-credentials openfortidesk-ci --apple-id "$NOTARY_APPLE_ID" --team-id "$TEAM_ID" \
+          xcrun notarytool store-credentials tunnelmac-ci --apple-id "$NOTARY_APPLE_ID" --team-id "$TEAM_ID" \
             --password "$NOTARY_PASSWORD" --keychain "$KEYCHAIN" > /dev/null
           identity=$(security find-identity -v -p codesigning "$KEYCHAIN" |
             sed -nE "s/^ *[0-9]+\) ([0-9A-F]{40}) \"Developer ID Application: .+ \($TEAM_ID\)\"$/\1/p")
@@ -89,8 +89,8 @@ jobs:
         run: |
           set -eu
           SIGNING_KEYCHAIN="$KEYCHAIN" ./scripts/build.sh
-          NOTARY_PROFILE=openfortidesk-ci NOTARY_KEYCHAIN="$KEYCHAIN" ./scripts/notarize.sh "$OUTPUT_DIR/OpenFortiDesk.app"
-          ./scripts/package-release.sh "$OUTPUT_DIR/OpenFortiDesk.app"
+          NOTARY_PROFILE=tunnelmac-ci NOTARY_KEYCHAIN="$KEYCHAIN" ./scripts/notarize.sh "$OUTPUT_DIR/TunnelMac.app"
+          ./scripts/package-release.sh "$OUTPUT_DIR/TunnelMac.app"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -116,8 +116,8 @@ jobs:
           prerelease=()
           [[ "$release" != *-* ]] || prerelease=(--prerelease)
           gh release create "v$release" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft ${prerelease[@]+"${prerelease[@]}"} \
-            --title "OpenFortiDesk $release" --notes-file packaging/release-notes.md \
-            "$RELEASE_DIR/OpenFortiDesk-$release-arm64.zip" "$RELEASE_DIR/SHA256SUMS"
+            --title "TunnelMac $release" --notes-file packaging/release-notes.md \
+            "$RELEASE_DIR/TunnelMac-$release-arm64.zip" "$RELEASE_DIR/SHA256SUMS"
 
       # Removes the keychain even when the job fails and checks the search list is restored.
       - name: Remove the temporary keychain

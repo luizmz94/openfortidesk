@@ -1,12 +1,12 @@
-# OpenFortiDesk brand
+# TunnelMac brand
 
 Two routes form a V and converge on a secure node. The existing symbol, ICNS and
 menu bar template are preserved from the owner-supplied VPN GUI brand pack.
 See THIRD_PARTY_NOTICES.md for provenance and license scope.
 
-The four horizontal SVG wordmarks now contain editable OpenFortiDesk text in generic
+The four horizontal SVG wordmarks now contain editable TunnelMac text in generic
 bold sans-serif. No font binaries or original Manrope outlines are redistributed.
-Legacy filenames remain for source compatibility; the visible name is OpenFortiDesk.
+Legacy filenames remain for source compatibility; the visible name is TunnelMac.
 Old PNG wordmark exports are not part of this public asset set. The original supplied
 pack is retained locally under the ignored build directory during preparation.
 

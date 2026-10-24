@@ -2,6 +2,12 @@
 
 ## 0.4.0-rc.1 — unreleased
 
+- Rename the product from OpenFortiDesk to **TunnelMac** (bundle `TunnelMac.app`,
+  cask `tunnelmac`, repositories `luizmz94/tunnelmac` and
+  `luizmz94/homebrew-tunnelmac`). Bundle/helper identifiers, profiles, Keychain
+  services and runtime approvals are unchanged. The cask and `install.sh` treat
+  `OpenFortiDesk.app` as a legacy bundle: its service must be removed first, and the
+  old bundle is backed up.
 - OpenVPN support next to Fortinet. **Importar perfil OpenVPN…** (⌘I) reads a single
   `.ovpn`/`.conf` with inline keys or a Viscosity `.visc` folder with external
   `ca`/`cert`/`key`/`ta` files. Referenced files are read only from inside the

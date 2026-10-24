@@ -158,10 +158,10 @@ final class LoginItemController: ObservableObject {
         if let unavailableReason { return unavailableReason }
         if let message { return message }
         switch status {
-        case .enabled: return "Abre o OpenFortiDesk quando você entra no Mac."
+        case .enabled: return "Abre o TunnelMac quando você entra no Mac."
         case .requiresApproval: return "Aguardando aprovação em Ajustes do Sistema › Geral › Itens de Início."
         case .notFound: return "O macOS não encontrou o app para abrir ao iniciar. Instale-o em /Applications."
-        default: return "Abre o OpenFortiDesk quando você entra no Mac."
+        default: return "Abre o TunnelMac quando você entra no Mac."
         }
     }
 }

@@ -65,7 +65,7 @@ final class FakeLoginItem: LoginItemService {
 enum SettingsTests {
     static func release(_ tag: String, prerelease: Bool = false, draft: Bool = false,
                         url: String? = nil, body: String = "Notas") -> [String: Any] {
-        ["tag_name": tag, "html_url": url ?? "https://github.com/luizmz94/openfortidesk/releases/tag/\(tag)",
+        ["tag_name": tag, "html_url": url ?? "https://github.com/luizmz94/tunnelmac/releases/tag/\(tag)",
          "draft": draft, "prerelease": prerelease, "body": body, "published_at": "2026-10-23T12:00:00Z"]
     }
     static func json(_ releases: [[String: Any]]) -> Data { try! JSONSerialization.data(withJSONObject: releases) }
@@ -75,9 +75,9 @@ enum SettingsTests {
         release("v0.3.0"),
         release("v0.3.1-rc.1", prerelease: true, body: "## Novidades\n\n- **Configurações** novas\n- Veja [o guia](https://example.invalid)\n<script>alert(1)</script>"),
         release("v0.3.0-rc.5", prerelease: true),
-        release("v0.4.0", url: "https://github.com/someone-else/openfortidesk/releases/tag/v0.4.0"),
-        release("v0.4.1", url: "https://github.com/luizmz94/openfortidesk/releases/../../evil/x"),
-        release("v0.4.2", url: "http://github.com/luizmz94/openfortidesk/releases/tag/v0.4.2"),
+        release("v0.4.0", url: "https://github.com/someone-else/tunnelmac/releases/tag/v0.4.0"),
+        release("v0.4.1", url: "https://github.com/luizmz94/tunnelmac/releases/../../evil/x"),
+        release("v0.4.2", url: "http://github.com/luizmz94/tunnelmac/releases/tag/v0.4.2"),
         release("v0.9", prerelease: false),
         release("0.9.0"),
         release("v0.9.0-beta.1", prerelease: true),
@@ -134,12 +134,12 @@ enum SettingsTests {
             // A candidate tag marked as stable still counts as a test version.
             let mislabeled = try UpdateFeed.decode(json([release("v0.3.0-rc.9")]))
             try require(UpdateFeed.select(mislabeled, current: rc4, includePrereleases: false, skipped: nil) == nil, "rc sem canal de teste")
-            for url in ["https://github.com/luizmz94/openfortidesk/releases/tag/v1.0.0"] {
+            for url in ["https://github.com/luizmz94/tunnelmac/releases/tag/v1.0.0"] {
                 try require(UpdateFeed.isTrustedPage(url), "URL válida recusada")
             }
-            for url in ["https://github.com/luizmz94/openfortidesk/issues/1", "https://github.com.evil.invalid/luizmz94/openfortidesk/releases/x",
-                        "https://github.com/luizmz94/openfortidesk/releases/../../x", "javascript:alert(1)",
-                        "https://github.com/luizmz94/openfortidesk/releases/ x"] {
+            for url in ["https://github.com/luizmz94/tunnelmac/issues/1", "https://github.com.evil.invalid/luizmz94/tunnelmac/releases/x",
+                        "https://github.com/luizmz94/tunnelmac/releases/../../x", "javascript:alert(1)",
+                        "https://github.com/luizmz94/tunnelmac/releases/ x"] {
                 try require(!UpdateFeed.isTrustedPage(url), "URL fora do repositório aceita: \(url)")
             }
             let long = UpdateFeed.plainText((1...40).map { "- item \($0)" }.joined(separator: "\n"))
@@ -148,11 +148,11 @@ enum SettingsTests {
 
         test("Requisição: endpoint, cabeçalhos exatos, sem cookies nem cache") {
             let request = UpdateFeed.request(version: "0.3.0-rc.4")
-            try require(request.url?.absoluteString == "https://api.github.com/repos/luizmz94/openfortidesk/releases?per_page=20", "Endpoint")
+            try require(request.url?.absoluteString == "https://api.github.com/repos/luizmz94/tunnelmac/releases?per_page=20", "Endpoint")
             try require(request.httpMethod == "GET" && !request.httpShouldHandleCookies && request.timeoutInterval == 15
                         && request.cachePolicy == .reloadIgnoringLocalAndRemoteCacheData, "Política da requisição")
             try require(request.allHTTPHeaderFields == ["Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
-                                                        "User-Agent": "OpenFortiDesk/0.3.0-rc.4"], "Cabeçalhos: \(request.allHTTPHeaderFields ?? [:])")
+                                                        "User-Agent": "TunnelMac/0.3.0-rc.4"], "Cabeçalhos: \(request.allHTTPHeaderFields ?? [:])")
         }
 
         test("Agendamento: abertura, intervalo de 4 h no Conectar, falhas, automático desligado, manual e sem paralelo") {
@@ -279,7 +279,7 @@ enum SettingsTests {
                 throw TestSupport.Failure("Resposta válida não lida")
             }
             let seen = StubUpdateProtocol.seen.first
-            try require(seen?.value(forHTTPHeaderField: "User-Agent") == "OpenFortiDesk/\(HelperConstants.releaseVersion)"
+            try require(seen?.value(forHTTPHeaderField: "User-Agent") == "TunnelMac/\(HelperConstants.releaseVersion)"
                         && seen?.value(forHTTPHeaderField: "X-GitHub-Api-Version") == "2022-11-28"
                         && seen?.value(forHTTPHeaderField: "Cookie") == nil && seen?.value(forHTTPHeaderField: "Authorization") == nil,
                         "Cabeçalhos enviados: \(seen?.allHTTPHeaderFields ?? [:])")
@@ -293,7 +293,7 @@ enum SettingsTests {
                 throw TestSupport.Failure("Content-Length acima do limite aceito")
             }
             var plain = UpdateFeed.request()
-            plain.url = URL(string: "http://api.github.com/repos/luizmz94/openfortidesk/releases")
+            plain.url = URL(string: "http://api.github.com/repos/luizmz94/tunnelmac/releases")
             guard case .failure(let insecure) = try fetch(transport, plain), insecure as? UpdateTransportError == .notHTTPS else {
                 throw TestSupport.Failure("HTTP sem TLS aceito")
             }
@@ -464,13 +464,13 @@ enum SettingsTests {
 
         test("Homebrew: detecção por diretório injetado e comando exato") {
             let base = root.appendingPathComponent("brew")
-            let present = base.appendingPathComponent("arm/Caskroom/openfortidesk").path
+            let present = base.appendingPathComponent("arm/Caskroom/tunnelmac").path
             try FileManager.default.createDirectory(atPath: present, withIntermediateDirectories: true)
-            let absent = base.appendingPathComponent("intel/Caskroom/openfortidesk").path
+            let absent = base.appendingPathComponent("intel/Caskroom/tunnelmac").path
             try require(HomebrewInstall.detect(caskrooms: [absent, present]), "Caskroom não detectado")
             try require(!HomebrewInstall.detect(caskrooms: [absent]), "Detectou sem Caskroom")
-            try require(HomebrewInstall.caskrooms == ["/opt/homebrew/Caskroom/openfortidesk", "/usr/local/Caskroom/openfortidesk"], "Caminhos padrão")
-            try require(HomebrewInstall.upgradeCommand == "brew upgrade --cask luizmz94/openfortidesk/openfortidesk", "Comando exibido")
+            try require(HomebrewInstall.caskrooms == ["/opt/homebrew/Caskroom/tunnelmac", "/usr/local/Caskroom/tunnelmac"], "Caminhos padrão")
+            try require(HomebrewInstall.upgradeCommand == "brew upgrade --cask luizmz94/tunnelmac/tunnelmac", "Comando exibido")
         }
 
         test("Renderização fora da tela: Configurações em cada aba e cartão de atualização, claro e escuro") {

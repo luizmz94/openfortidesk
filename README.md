@@ -1,4 +1,4 @@
-# OpenFortiDesk
+# TunnelMac
 
 Native macOS GUI for the original [openfortivpn](https://github.com/adrienverge/openfortivpn)
 and, since 0.4.0, for [OpenVPN](https://openvpn.net/community/) 2.7+ profiles,
@@ -6,23 +6,26 @@ using SwiftUI/AppKit and a bundled SMAppService/XPC privileged helper. Independe
 of, and not affiliated with, Fortinet or the openfortivpn project. No VPN executable
 or Homebrew libraries are bundled in the distributed app.
 
+Formerly **OpenFortiDesk**: renamed in 0.4.0 because the app is no longer
+Fortinet-only.
+
 **Status:** release candidate
-[`v0.3.0-rc.5`](https://github.com/luizmz94/openfortidesk/releases/tag/v0.3.0-rc.5),
+[`v0.3.0-rc.5`](https://github.com/luizmz94/tunnelmac/releases/tag/v0.3.0-rc.5),
 signed with Developer ID and notarized. Full Homebrew upgrade/uninstall lifecycle
 validation is still pending, so it is not yet declared stable.
 
 ## Installation and first use
 
 ```sh
-brew install --cask luizmz94/openfortidesk/openfortidesk
+brew install --cask luizmz94/tunnelmac/tunnelmac
 # Equivalent:
-brew tap luizmz94/openfortidesk
-brew install --cask openfortidesk
+brew tap luizmz94/tunnelmac
+brew install --cask tunnelmac
 ```
 
-The tap lives at [luizmz94/homebrew-openfortidesk](https://github.com/luizmz94/homebrew-openfortidesk).
-For a manual install, download `OpenFortiDesk-<version>-arm64.zip` and `SHA256SUMS`
-from [Releases](https://github.com/luizmz94/openfortidesk/releases), check the
+The tap lives at [luizmz94/homebrew-tunnelmac](https://github.com/luizmz94/homebrew-tunnelmac).
+For a manual install, download `TunnelMac-<version>-arm64.zip` and `SHA256SUMS`
+from [Releases](https://github.com/luizmz94/tunnelmac/releases), check the
 checksum with `shasum -a 256 -c SHA256SUMS`, unzip and move the app to
 `/Applications`, and install openfortivpn with `brew install openfortivpn`.
 
@@ -31,7 +34,7 @@ with standard material fallbacks before macOS 26; the new Liquid Glass APIs requ
 macOS 26+. Only the host OS/architecture actually checked appears in the release
 report. Intel is not offered until tested; Rosetta cannot run arm64 code on Intel.
 
-Install the signed/notarized app in `/Applications/OpenFortiDesk.app`. Open
+Install the signed/notarized app in `/Applications/TunnelMac.app`. Open
 **Configurações… → Serviço privilegiado → Ativar serviço** (the **Gerenciar…** button
 in the sidebar opens the same tab) and approve the background item in System Settings
 → General → Login Items. Return to the app, review **Aprovar openfortivpn…** and
@@ -100,7 +103,7 @@ sensitive is stored there.
 
 The app only checks for and announces new versions; it never downloads, opens or
 runs anything, and never calls `brew`. It sends one anonymous `GET` to
-`https://api.github.com/repos/luizmz94/openfortidesk/releases` (no token, cookies,
+`https://api.github.com/repos/luizmz94/tunnelmac/releases` (no token, cookies,
 machine identifiers or connection data), at launch, on **Conectar** when the last
 attempt is more than 4 hours old, from an hourly timer with the same interval, and
 when you choose **Verificar atualizações…**. Checking never delays a connection.
@@ -114,7 +117,7 @@ can skip a version. To install it, quit with **Sair** (this disconnects the VPNs
 then run:
 
 ```sh
-brew upgrade --cask luizmz94/openfortidesk/openfortidesk
+brew upgrade --cask luizmz94/tunnelmac/tunnelmac
 ```
 
 ## Updates, migration and removal
@@ -122,14 +125,14 @@ brew upgrade --cask luizmz94/openfortidesk/openfortidesk
 After publication:
 
 ```sh
-brew upgrade --cask luizmz94/openfortidesk/openfortidesk
-brew uninstall --cask luizmz94/openfortidesk/openfortidesk
+brew upgrade --cask luizmz94/tunnelmac/tunnelmac
+brew uninstall --cask luizmz94/tunnelmac/tunnelmac
 ```
 
 Upgrade/reinstall/uninstall call the installed app's restricted normal-user
 maintenance command **before** bundle removal. Homebrew runs it inside its sandbox,
 where the app cannot reach the service registration or the helper. There it only
-checks, without contacting anything, that OpenFortiDesk, its supervisors and its
+checks, without contacting anything, that TunnelMac, its supervisors and its
 openfortivpn are not running, and keeps the service registered: the upgraded bundle
 lands at the same path with the same identifiers and Team, so the registration stays
 valid. Before `brew upgrade`, quit the app with **Sair** (this disconnects its VPNs);
@@ -143,16 +146,18 @@ example `./scripts/install.sh`), the same command requests normal quit, waits fo
 cleanup, has the authenticated helper prove global idle and unregisters the service.
 This lifecycle still requires isolated VM validation before a stable release.
 
-Moving from rc.1 or rc.2: their installed maintenance command always fails inside the
-Homebrew sandbox, so `brew upgrade` stops. Use **Remover serviço** and **Sair** in the
-app, move `/Applications/OpenFortiDesk.app` to the Trash, then run
-`rm -rf "$(brew --caskroom)/openfortidesk"` and
-`brew install --cask luizmz94/openfortidesk/openfortidesk`, and activate the service
-again from the new app.
+Moving from OpenFortiDesk (the name of this app up to 0.3.0): the bundle name changed,
+so the old service registration cannot follow it. In OpenFortiDesk use **Configurações…
+→ Serviço privilegiado → Remover serviço** and quit with **Sair**, then run
+`brew uninstall --cask openfortidesk`, `brew untap luizmz94/openfortidesk` and
+`brew install --cask luizmz94/tunnelmac/tunnelmac`, and activate the service again
+from TunnelMac. Profiles, Keychain secrets and approvals of the protected runtime are
+kept: the identifiers did not change.
 
-When the cask finds `/Applications/VPNGUI.app`, it requires the old service to be
-removed first (checked with `launchctl print`): open VPNGUI, use **Remover serviço**,
-quit with **Sair** and run brew again. For manual migration, run `./scripts/install.sh`
+When the cask finds `/Applications/OpenFortiDesk.app` or `/Applications/VPNGUI.app`,
+it requires the old service to be removed first (checked with `launchctl print`): open
+the old app, use **Remover serviço**, quit with **Sair** and run brew again. The old
+bundle is moved to Application Support/VPNGUI/Backups. For manual migration, run `./scripts/install.sh`
 after building/signing/notarizing. The script stages and verifies the new bundle,
 backs up both possible installed names in Application Support/VPNGUI/Backups and
 requires cleanup/unregister before replacing either bundle. If an old helper does
@@ -188,7 +193,7 @@ Use Xcode with macOS 26 SDK or newer. Preparation used Swift 6.4/macOS 27 SDK.
 brew install openfortivpn
 ./scripts/build.sh
 ./scripts/test.sh
-./build/0.3.0/OpenFortiDesk.app/Contents/MacOS/VPNGUI --release-checks
+./build/0.3.0/TunnelMac.app/Contents/MacOS/VPNGUI --release-checks
 ```
 
 Build outputs are isolated under `build/<version>`; set OUTPUT_DIR to preserve other

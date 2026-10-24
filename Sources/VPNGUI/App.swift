@@ -249,7 +249,7 @@ struct VPNGUIApp: App {
         _preferences = StateObject(wrappedValue: preferences)
     }
     var body: some Scene {
-        WindowGroup("OpenFortiDesk · \(HelperConstants.version)", id: MenuBarCoordinator.sceneID) {
+        WindowGroup("TunnelMac · \(HelperConstants.version)", id: MenuBarCoordinator.sceneID) {
             if MenuBarCoordinator.isLocalChecks {
                 LocalTestsView()
             } else {

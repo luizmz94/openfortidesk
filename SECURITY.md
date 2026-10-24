@@ -4,7 +4,7 @@
 
 Do not post exploits, secrets or real VPN details in public issues. Report
 vulnerabilities privately through GitHub:
-[Security → Report a vulnerability](https://github.com/luizmz94/openfortidesk/security/advisories/new).
+[Security → Report a vulnerability](https://github.com/luizmz94/tunnelmac/security/advisories/new).
 No response-time commitment is made. There has been no independent security audit.
 
 Include version/build, macOS, architecture and a reproduction with fictitious
@@ -26,7 +26,7 @@ The helper verifies its integrity before every start. Initial approval trusts th
 inspected local files; hashes alone do not establish upstream provenance.
 
 Besides the VPN tunnels, the app's only network connection is the update check: an
-anonymous HTTPS `GET` to the public GitHub releases API of luizmz94/openfortidesk
+anonymous HTTPS `GET` to the public GitHub releases API of luizmz94/tunnelmac
 (ephemeral session, no cookies, cache or token, no redirects, 1 MiB response limit).
 It sends no personal, machine or connection data and can be turned off in
 Configurações → Atualizações. Only release pages of this repository are linked;

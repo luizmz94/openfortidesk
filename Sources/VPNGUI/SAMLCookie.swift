@@ -75,7 +75,7 @@ struct SAMLCookieStore {
         let q = query(connection.id)
         let values: [String: Any] = [kSecValueData as String: data,
                                      kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-                                     kSecAttrLabel as String: "OpenFortiDesk – sessão SAML temporária"]
+                                     kSecAttrLabel as String: "TunnelMac – sessão SAML temporária"]
         let status = SecItemUpdate(q as CFDictionary, values as CFDictionary)
         if status == errSecItemNotFound {
             try check(SecItemAdd(q.merging(values) { _, new in new } as CFDictionary, nil))

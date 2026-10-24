@@ -65,7 +65,7 @@ struct MenuBarView: View {
         HStack(spacing: 10) {
             BrandSymbol(size: 32)
             VStack(alignment: .leading, spacing: 1) {
-                Text("OpenFortiDesk").font(.headline)
+                Text("TunnelMac").font(.headline)
                 Text(menuBar.summaryText).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
@@ -79,7 +79,7 @@ struct MenuBarView: View {
                     detail: (model.error ?? "O arquivo existente foi preservado.") + "\nAs ações de conexão ficam indisponíveis até o problema ser resolvido.")
         } else if model.data.connections.isEmpty {
             message(title: "Nenhuma conexão cadastrada", symbol: "network", tone: .neutral,
-                    detail: "Use Abrir OpenFortiDesk para cadastrar uma conexão.")
+                    detail: "Use Abrir TunnelMac para cadastrar uma conexão.")
         } else {
             let duplicated = menuBar.duplicatedNames
             ScrollView(.vertical) {
@@ -162,7 +162,7 @@ struct MenuBarView: View {
     private var footer: some View {
         GlassGroup(spacing: 8) {
             HStack(spacing: 8) {
-                Button { menuBar.showMainWindow() } label: { Label("Abrir OpenFortiDesk", systemImage: "macwindow") }
+                Button { menuBar.showMainWindow() } label: { Label("Abrir TunnelMac", systemImage: "macwindow") }
                     .keyboardShortcut("o")
                     .help("Mostrar a janela principal para cadastro, certificados e logs (⌘O)")
                 Spacer(minLength: 0)
@@ -180,7 +180,7 @@ struct MenuBarView: View {
 
                 Button { NSApp.terminate(nil) } label: { Label("Sair", systemImage: "power") }
                     .keyboardShortcut("q")
-                    .help("Encerrar o OpenFortiDesk; conexões ativas exigem confirmação (⌘Q)")
+                    .help("Encerrar o TunnelMac; conexões ativas exigem confirmação (⌘Q)")
             }
             .controlSize(.small)
             .adaptiveMenuFooterStyle()

@@ -823,7 +823,7 @@ enum HelperTests {
         }
 
         test("LaunchDaemon: plist do bundle sem RunAtLoad/KeepAlive, programa relativo ao app e Mach service exclusivo") {
-            let app = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("OpenFortiDesk.app")
+            let app = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("TunnelMac.app")
             let plistURL = app.appendingPathComponent("Contents/Library/LaunchDaemons/\(HelperConstants.plistName)")
             let data = try Data(contentsOf: plistURL)
             guard let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else { throw TestSupport.Failure("Plist ilegível") }
@@ -866,11 +866,12 @@ enum HelperTests {
         }
 
         test("Homebrew sandbox: maintenance keeps the registration, sees running product processes without mach-lookup") {
-            for path in ["/Applications/OpenFortiDesk.app/Contents/MacOS/VPNGUI", "/x/VPNGUI.app/Contents/MacOS/VPNSupervisor",
+            for path in ["/Applications/TunnelMac.app/Contents/MacOS/VPNGUI", "/x/VPNGUI.app/Contents/MacOS/VPNSupervisor",
+                         "/Applications/OpenFortiDesk.app/Contents/MacOS/VPNGUI",
                          HelperConstants.stateDirectory + "/supervisor/VPNSupervisor-0", HelperConstants.stateDirectory + "/runtime/0/bin/openfortivpn"] {
                 try require(Maintenance.isProductExecutable(path), "Product process missed: \(path)")
             }
-            for path in ["/Applications/OpenFortiDesk.app/Contents/MacOS/VPNHelper", "/x/VPNGUILocalChecks.app/Contents/MacOS/VPNGUI",
+            for path in ["/Applications/TunnelMac.app/Contents/MacOS/VPNHelper", "/x/VPNGUILocalChecks.app/Contents/MacOS/VPNGUI",
                          "/opt/homebrew/bin/openfortivpn", HelperConstants.stateDirectory + "-other/x"] {
                 try require(!Maintenance.isProductExecutable(path), "Unrelated process matched: \(path)")
             }
@@ -902,11 +903,11 @@ enum HelperTests {
             } else {
                 try require(clean.status == 1 && real.allSatisfy { clean.errors.contains("\($0.pid) \($0.path)") },
                             "Sandbox scan differs from the real one: \(clean.errors)")
-                print("NOTE: OpenFortiDesk is running on this Mac; the exit-0 case runs only when it is closed")
+                print("NOTE: TunnelMac is running on this Mac; the exit-0 case runs only when it is closed")
             }
             try require(!clean.errors.contains("signed app"), "Restricted mode not detected in the sandbox")
             // Harmless stand-in at an app path: a copy of /bin/sleep, ended by this test.
-            let fakeURL = root.appendingPathComponent("OpenFortiDesk.app/Contents/MacOS/VPNGUI")
+            let fakeURL = root.appendingPathComponent("TunnelMac.app/Contents/MacOS/VPNGUI")
             try FileManager.default.createDirectory(at: fakeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             try FileManager.default.copyItem(atPath: "/bin/sleep", toPath: fakeURL.path)
             // A copied platform binary is killed at exec; an ad hoc signature lets it run.
@@ -928,7 +929,7 @@ enum HelperTests {
             for argument in [Maintenance.argument, Maintenance.legacyMigrationArgument] {
                 let busy = try sandboxed(argument)
                 try require(busy.status == 1 && busy.errors.contains("\(fake.processIdentifier) ")
-                            && busy.errors.contains("/OpenFortiDesk.app/Contents/MacOS/VPNGUI") && busy.errors.contains(Maintenance.quitAndRetry),
+                            && busy.errors.contains("/TunnelMac.app/Contents/MacOS/VPNGUI") && busy.errors.contains(Maintenance.quitAndRetry),
                             "Running app not refused by \(argument): \(busy.errors)")
             }
         }

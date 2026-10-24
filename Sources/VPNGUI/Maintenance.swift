@@ -9,13 +9,14 @@ import VPNHelperShared
 @MainActor
 enum Maintenance {
     static let argument = "--prepare-for-maintenance"
-    /// Used by the cask before it moves a legacy VPNGUI.app away. Read-only.
+    /// Used by the cask before it moves a legacy OpenFortiDesk.app or VPNGUI.app away. Read-only.
     static let legacyMigrationArgument = "--prepare-for-legacy-migration"
 
-    static let quitAndRetry = "Quit OpenFortiDesk with Sair (this disconnects its VPNs), then run brew again."
+    static let quitAndRetry = "Quit TunnelMac with Sair (this disconnects its VPNs), then run brew again."
     static let removeLegacyService = """
-        The service of the old VPNGUI.app is still registered. Open VPNGUI, use Remover serviço \
-        in Gerenciar…, quit it with Sair, then run brew again.
+        The service of the old app (OpenFortiDesk.app or VPNGUI.app) is still registered. Open it, \
+        use Remover serviço in Configurações… > Serviço privilegiado (Gerenciar… in VPNGUI), quit it \
+        with Sair, then run brew again.
         """
 
     static func run() -> Int32 {
@@ -56,7 +57,7 @@ enum Maintenance {
     }
 
     /// Product executables, found through libproc (no mach-lookup, no signals):
-    /// the app and its supervisor in OpenFortiDesk.app or VPNGUI.app, and the
+    /// the app and its supervisor in TunnelMac.app or a legacy bundle name, and the
     /// supervisor copy and managed openfortivpn in the helper's state directory.
     static func runningProductProcesses(excluding own: pid_t = getpid()) -> [(pid: pid_t, path: String)] {
         runningProcesses(excluding: own, matching: isProductExecutable)
@@ -87,16 +88,19 @@ enum Maintenance {
         return found
     }
 
+    /// Earlier names of the same product (same identifiers, profiles and Keychain).
+    static let legacyBundles = ["OpenFortiDesk.app", "VPNGUI.app"]
+
     static func isProductExecutable(_ path: String) -> Bool {
         if path.hasPrefix(HelperConstants.stateDirectory + "/") { return true }
-        return ["OpenFortiDesk.app", "VPNGUI.app"].contains { bundle in
+        return (["TunnelMac.app"] + legacyBundles).contains { bundle in
             ["VPNGUI", "VPNSupervisor"].contains { path.hasSuffix("/" + bundle + "/Contents/MacOS/" + $0) }
         }
     }
 
     private static func busy(_ running: [(pid: pid_t, path: String)]) -> Int32 {
         let list = running.map { "  \($0.pid) \($0.path)" }.joined(separator: "\n")
-        return fail("OpenFortiDesk is still running:\n\(list)\n\(quitAndRetry) The bundle was preserved.")
+        return fail("TunnelMac is still running:\n\(list)\n\(quitAndRetry) The bundle was preserved.")
     }
 
     // MARK: Full maintenance (outside the sandbox)

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds OpenFortiDesk.app with the LaunchDaemon helper into an isolated, versioned folder.
+# Builds TunnelMac.app with the LaunchDaemon helper into an isolated, versioned folder.
 #
 #   ./scripts/build.sh                      # local build, ad hoc signature (compiles/tests;
 #                                           # the privileged service stays disabled)
@@ -20,7 +20,7 @@ build=$(sed -n 's/.*static let build = "\(.*\)".*/\1/p' "$constants")
 identity="${SIGNING_IDENTITY:--}"
 team="${TEAM_ID:-}"
 out="${OUTPUT_DIR:-$PWD/build/$version}"
-app="$out/OpenFortiDesk.app"
+app="$out/TunnelMac.app"
 
 # Never overwrite a bundle that is running (personal instance with tunnels).
 if pgrep -f "$app/Contents/MacOS/VPNGUI" >/dev/null 2>&1; then
@@ -47,8 +47,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <plist version="1.0"><dict>
 <key>CFBundleExecutable</key><string>VPNGUI</string>
 <key>CFBundleIdentifier</key><string>com.luiz.vpngui</string>
-<key>CFBundleName</key><string>OpenFortiDesk</string>
-<key>CFBundleDisplayName</key><string>OpenFortiDesk</string>
+<key>CFBundleName</key><string>TunnelMac</string>
+<key>CFBundleDisplayName</key><string>TunnelMac</string>
 <key>CFBundleIconFile</key><string>AppIcon.icns</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>$version</string>

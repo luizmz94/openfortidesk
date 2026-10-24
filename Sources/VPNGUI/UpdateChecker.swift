@@ -81,7 +81,7 @@ struct UpdateOffer: Codable, Equatable {
 }
 
 enum UpdateFeed {
-    static let repository = "luizmz94/openfortidesk"
+    static let repository = "luizmz94/tunnelmac"
     static let endpoint = URL(string: "https://api.github.com/repos/\(repository)/releases?per_page=20")!
     static let releasePagePrefix = "https://github.com/\(repository)/releases/"
     static let repositoryPage = URL(string: "https://github.com/\(repository)")!
@@ -94,7 +94,7 @@ enum UpdateFeed {
         request.httpShouldHandleCookies = false
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
-        request.setValue("OpenFortiDesk/\(version)", forHTTPHeaderField: "User-Agent")
+        request.setValue("TunnelMac/\(version)", forHTTPHeaderField: "User-Agent")
         return request
     }
 
@@ -408,8 +408,8 @@ final class UpdateChecker: ObservableObject {
 
 /// Installation by the tap, detected only by the existence of the Caskroom directory.
 enum HomebrewInstall {
-    static let caskrooms = ["/opt/homebrew/Caskroom/openfortidesk", "/usr/local/Caskroom/openfortidesk"]
-    static let upgradeCommand = "brew upgrade --cask luizmz94/openfortidesk/openfortidesk"
+    static let caskrooms = ["/opt/homebrew/Caskroom/tunnelmac", "/usr/local/Caskroom/tunnelmac"]
+    static let upgradeCommand = "brew upgrade --cask luizmz94/tunnelmac/tunnelmac"
 
     static func detect(caskrooms: [String] = caskrooms,
                        exists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }) -> Bool {

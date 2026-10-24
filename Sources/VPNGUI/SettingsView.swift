@@ -210,7 +210,7 @@ struct GeneralSettings: View {
     var body: some View {
         SettingsSection(title: "Aplicativo") {
             SettingsRow(symbol: "menubar.rectangle", color: .blue, title: "Ícone na barra de menus",
-                        subtitle: "Mostra o OpenFortiDesk na barra de menus para conectar rapidamente.") {
+                        subtitle: "Mostra o TunnelMac na barra de menus para conectar rapidamente.") {
                 Toggle("Ícone na barra de menus", isOn: $preferences.showMenuBarIcon).settingsSwitch("Ícone na barra de menus")
             }
             SettingsDivider()
@@ -254,7 +254,7 @@ struct UpdateSettings: View {
 
     var body: some View {
         SettingsSection(title: "Versão instalada") {
-            SettingsRow(symbol: "shippingbox", color: .blue, title: "OpenFortiDesk \(HelperConstants.releaseVersion)",
+            SettingsRow(symbol: "shippingbox", color: .blue, title: "TunnelMac \(HelperConstants.releaseVersion)",
                         subtitle: lastCheckText) {
                 HStack(spacing: 8) {
                     if updates.checking {
@@ -310,7 +310,7 @@ struct UpdateSettings: View {
                 HStack(alignment: .center, spacing: 12) {
                     Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 40, height: 40).accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("OpenFortiDesk \(offer.version)").font(.headline).textSelection(.enabled)
+                        Text("TunnelMac \(offer.version)").font(.headline).textSelection(.enabled)
                         Text(subtitle(offer)).font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 8)
@@ -339,7 +339,7 @@ struct UpdateSettings: View {
             VStack(alignment: .leading, spacing: 12) {
                 if installedByHomebrew {
                     VStack(alignment: .leading, spacing: 4) {
-                        step(1, "Saia do OpenFortiDesk com Sair (isso desconecta as VPNs).")
+                        step(1, "Saia do TunnelMac com Sair (isso desconecta as VPNs).")
                         step(2, "Cole o comando no Terminal.")
                         step(3, "Abra o app de novo.")
                     }
@@ -361,7 +361,7 @@ struct UpdateSettings: View {
                     }
                     .controlSize(.small)
                 } else {
-                    Text("Este app não foi instalado pelo Homebrew. Baixe a nova versão na página do GitHub e substitua o app com o OpenFortiDesk fechado.")
+                    Text("Este app não foi instalado pelo Homebrew. Baixe a nova versão na página do GitHub e substitua o app com o TunnelMac fechado.")
                         .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     Button { open(offer) } label: { Label("Baixar no GitHub", systemImage: "arrow.down.circle") }
                         .adaptiveButtonStyle(prominent: true).controlSize(.small)
@@ -399,7 +399,7 @@ struct ServiceSettings: View {
     /// Checked against SECURITY.md and VPNHelperCore: XPC peers must carry this app's
     /// identifier and Team ID, the helper only starts the approved, integrity-checked
     /// runtime copy, and passwords reach it per connection through file descriptors.
-    static let explanation = "O openfortivpn e o OpenVPN precisam de privilégios de administrador para criar a interface da VPN e ajustar rotas e DNS. Em vez de pedir sua senha a cada conexão ou rodar o app como root, o OpenFortiDesk registra um pequeno serviço do sistema que só aceita pedidos deste app assinado, só executa as cópias do openfortivpn e do OpenVPN que você aprovou e não guarda senhas: elas ficam no seu Keychain e são entregues só ao conectar. Você pode removê-lo aqui a qualquer momento."
+    static let explanation = "O openfortivpn e o OpenVPN precisam de privilégios de administrador para criar a interface da VPN e ajustar rotas e DNS. Em vez de pedir sua senha a cada conexão ou rodar o app como root, o TunnelMac registra um pequeno serviço do sistema que só aceita pedidos deste app assinado, só executa as cópias do openfortivpn e do OpenVPN que você aprovou e não guarda senhas: elas ficam no seu Keychain e são entregues só ao conectar. Você pode removê-lo aqui a qualquer momento."
 
     var body: some View {
         SettingsSection(title: "Por que este serviço existe") {
@@ -424,7 +424,7 @@ struct AboutSettings: View {
         HStack(spacing: 16) {
             Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 72, height: 72).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
-                Text("OpenFortiDesk").font(.title2.weight(.semibold))
+                Text("TunnelMac").font(.title2.weight(.semibold))
                 Text("Versão \(HelperConstants.releaseVersion) (build \(HelperConstants.build))")
                     .font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
                 Text("Interface nativa de macOS para o openfortivpn e o OpenVPN.").font(.callout).foregroundStyle(.secondary)
@@ -444,10 +444,10 @@ struct AboutSettings: View {
         }
         SettingsSection(title: "Dependências") {
             SettingsRow(symbol: "terminal", color: .gray, title: "openfortivpn",
-                        subtitle: "Para Fortinet SSL VPN. Dependência externa, instalada pelo Homebrew e mantida pelo próprio projeto. Não é distribuída com o OpenFortiDesk.")
+                        subtitle: "Para Fortinet SSL VPN. Dependência externa, instalada pelo Homebrew e mantida pelo próprio projeto. Não é distribuída com o TunnelMac.")
             SettingsDivider()
             SettingsRow(symbol: "terminal", color: .gray, title: "OpenVPN 2.7+",
-                        subtitle: "Para perfis OpenVPN (brew install openvpn). Dependência externa, não distribuída com o OpenFortiDesk.")
+                        subtitle: "Para perfis OpenVPN (brew install openvpn). Dependência externa, não distribuída com o TunnelMac.")
         }
     }
 
@@ -483,7 +483,7 @@ struct UpdateCard: View {
         HStack(alignment: .center, spacing: 12) {
             Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 34, height: 34).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text("OpenFortiDesk \(offer.version) disponível").font(.callout.weight(.semibold))
+                Text("TunnelMac \(offer.version) disponível").font(.callout.weight(.semibold))
                 Text(summary.isEmpty ? "Uma nova versão está disponível pelo Homebrew." : summary)
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }

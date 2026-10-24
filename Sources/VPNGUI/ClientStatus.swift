@@ -105,7 +105,7 @@ final class ClientVersionChecker: ObservableObject {
         for kind in RuntimeKind.allCases {
             var request = URLRequest(url: formulaURL(kind))
             request.setValue("application/json", forHTTPHeaderField: "Accept")
-            request.setValue("OpenFortiDesk/\(HelperConstants.releaseVersion)", forHTTPHeaderField: "User-Agent")
+            request.setValue("TunnelMac/\(HelperConstants.releaseVersion)", forHTTPHeaderField: "User-Agent")
             transport.fetch(request, limit: 512 * 1024) { [weak self] result in
                 guard let self else { return }
                 if case .success((200, let data)) = result, let version = Self.stableVersion(data) { self.latest[kind] = version }

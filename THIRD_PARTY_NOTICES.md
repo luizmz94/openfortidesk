@@ -26,7 +26,7 @@ server a connection talks to and imply no affiliation or endorsement.
 **Brand assets:** the original V/node symbol and icon were supplied by the project
 owner as the VPN GUI brand pack. SVG content credentials identify Claude as a
 creating/modifying tool, not an exclusive human author. They are retained as
-project assets. The editable OpenFortiDesk wordmark uses generic sans-serif text;
+project assets. The editable TunnelMac wordmark uses generic sans-serif text;
 no font files or copied Manrope glyph outlines are included in that wordmark.
 The original Manrope wordmark exports have been excluded from the public asset
 set; no font license is inferred from the font name alone.

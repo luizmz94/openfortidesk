@@ -2,7 +2,7 @@
 # Draft only. Publishing is a separate final action after review and validation.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-repo=luizmz94/openfortidesk
+repo=luizmz94/tunnelmac
 [[ $(git remote get-url origin) == "https://github.com/$repo.git" ]] || { echo 'Repository rename/origin update is pending.' >&2; exit 1; }
 [[ -z $(git status --porcelain) ]] || { echo 'Commit and validate the complete working tree first.' >&2; exit 1; }
 ./scripts/audit-publication.py > /dev/null
@@ -12,7 +12,7 @@ default=$(gh repo view "$repo" --json defaultBranchRef --jq .defaultBranchRef.na
 [[ $(git branch --show-current) == "$default" ]]
 [[ $(git rev-parse HEAD) == $(git ls-remote origin "refs/heads/$default" | cut -f1) ]]
 version=$(sed -n 's/.*static let releaseVersion = "\(.*\)".*/\1/p' Sources/VPNHelperShared/Constants.swift)
-app="${1:?Pass the signed and stapled OpenFortiDesk.app}"
+app="${1:?Pass the signed and stapled TunnelMac.app}"
 report="${TEST_REPORT:?Set TEST_REPORT to the full graphical suite output for the validated commit}"
 grep -q '^OK: 0 falha(s)' "$report"
 # At least one completed successful real CI run for exactly this commit.
@@ -26,6 +26,6 @@ if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null 2>&1
 out="$PWD/build/releases/$version"
 notes=packaging/release-notes.md
 gh release create "v$version" --repo "$repo" --target "$sha" --draft --prerelease \
-  --title "OpenFortiDesk $version" --notes-file "$notes" \
-  "$out/OpenFortiDesk-$version-arm64.zip" "$out/SHA256SUMS"
+  --title "TunnelMac $version" --notes-file "$notes" \
+  "$out/TunnelMac-$version-arm64.zip" "$out/SHA256SUMS"
 echo 'Draft uploaded. Verify artifacts and lifecycle checks before publishing the draft.'

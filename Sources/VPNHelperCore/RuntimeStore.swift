@@ -261,7 +261,7 @@ public final class RuntimeStore {
                 try SecureFile.create(staging + "/" + script.relativePath, data: script.data, mode: 0o555)
                 files.append(ManagedFile(path: script.relativePath, sha256: script.sha256, mode: 0o555))
             }
-            let config = Data("# OpenFortiDesk: configuração OpenSSL intencionalmente vazia (sem módulos, engines ou includes).\n".utf8)
+            let config = Data("# TunnelMac: configuração OpenSSL intencionalmente vazia (sem módulos, engines ou includes).\n".utf8)
             try SecureFile.create(staging + "/etc/openssl.cnf", data: config, mode: 0o444)
             files.append(ManagedFile(path: "etc/openssl.cnf", sha256: Digest.sha256(config), mode: 0o444))
             let notes = copyLicenses(inventory.licenseSources, into: staging + "/licenses")

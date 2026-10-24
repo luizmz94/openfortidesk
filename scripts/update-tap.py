@@ -8,7 +8,7 @@ import re
 import subprocess
 import tempfile
 
-REPO = 'luizmz94/openfortidesk'
+REPO = 'luizmz94/tunnelmac'
 
 def command(*args):
     return subprocess.check_output(args, text=True).strip()
@@ -18,14 +18,14 @@ def cask(version, digest):
         raise ValueError('Invalid version')
     if not re.fullmatch(r'[0-9a-f]{64}', digest):
         raise ValueError('Invalid SHA-256')
-    return r'''cask "openfortidesk" do
+    return r'''cask "tunnelmac" do
   version "%s"
   sha256 "%s"
 
-  url "https://github.com/luizmz94/openfortidesk/releases/download/v#{version}/OpenFortiDesk-#{version}-arm64.zip"
-  name "OpenFortiDesk"
-  desc "Native GUI for the original openfortivpn"
-  homepage "https://github.com/luizmz94/openfortidesk"
+  url "https://github.com/luizmz94/tunnelmac/releases/download/v#{version}/TunnelMac-#{version}-arm64.zip"
+  name "TunnelMac"
+  desc "Native GUI for openfortivpn and OpenVPN"
+  homepage "https://github.com/luizmz94/tunnelmac"
 
   livecheck do
     url :url
@@ -42,17 +42,28 @@ def cask(version, digest):
   depends_on formula: "openfortivpn"
   depends_on macos: :ventura
 
-  app "OpenFortiDesk.app"
+  app "TunnelMac.app"
 
   preflight_steps do
-    if_path_exists "VPNGUI.app", base: :appdir do
+    if_path_exists "OpenFortiDesk.app", base: :appdir do
       # Homebrew runs this in its sandbox: read-only, requires the old service removed.
-      run "OpenFortiDesk.app/Contents/MacOS/VPNGUI",
+      run "TunnelMac.app/Contents/MacOS/VPNGUI",
           args:         ["--prepare-for-legacy-migration"],
           base:         :staged_path,
           sudo:         false,
           must_succeed: true
-      move "VPNGUI.app", "~/Library/Application Support/VPNGUI/Backups/VPNGUI-before-OpenFortiDesk.app",
+      move "OpenFortiDesk.app", "~/Library/Application Support/VPNGUI/Backups/OpenFortiDesk-before-TunnelMac.app",
+           source_base: :appdir,
+           overwrite:   false
+    end
+    if_path_exists "VPNGUI.app", base: :appdir do
+      # Homebrew runs this in its sandbox: read-only, requires the old service removed.
+      run "TunnelMac.app/Contents/MacOS/VPNGUI",
+          args:         ["--prepare-for-legacy-migration"],
+          base:         :staged_path,
+          sudo:         false,
+          must_succeed: true
+      move "VPNGUI.app", "~/Library/Application Support/VPNGUI/Backups/VPNGUI-before-TunnelMac.app",
            source_base: :appdir,
            overwrite:   false
     end
@@ -60,7 +71,7 @@ def cask(version, digest):
 
   # In Homebrew's sandbox: refuses while the app runs, keeps the registration.
   uninstall_preflight_steps do
-    run "OpenFortiDesk.app/Contents/MacOS/VPNGUI",
+    run "TunnelMac.app/Contents/MacOS/VPNGUI",
         args:         ["--prepare-for-maintenance"],
         base:         :appdir,
         sudo:         false,
@@ -68,17 +79,19 @@ def cask(version, digest):
   end
 
   caveats <<~EOS
-    First use: open OpenFortiDesk, activate its service, approve it in System
-    Settings and approve the protected openfortivpn runtime.
+    First use: open TunnelMac, activate its service, approve it in System
+    Settings and approve the protected openfortivpn and/or OpenVPN runtime.
 
-    Before brew upgrade: quit OpenFortiDesk with Sair (this disconnects its
+    Before brew upgrade: quit TunnelMac with Sair (this disconnects its
     VPNs). The service registration is kept for the upgraded app.
 
     Before brew uninstall: open the app, use Configurações… > Serviço
     privilegiado > Remover serviço, then quit with Sair. Homebrew's sandbox does
     not allow removing the registration.
 
-    Migrating from VPNGUI.app: remove its service first the same way.
+    Migrating from OpenFortiDesk.app or VPNGUI.app (same product, earlier
+    name): remove its service first the same way, quit it, then
+    brew uninstall --cask openfortidesk (if installed) before installing.
 
     Release candidate: isolated root lifecycle integration is not yet validated.
     Profiles, Keychain secrets and the protected runtime survive uninstall. Do not
@@ -91,8 +104,8 @@ end
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('tag')
-    parser.add_argument('--tap', type=Path, default=Path(__file__).resolve().parent.parent.parent / 'homebrew-openfortidesk',
-                        help='checkout of luizmz94/homebrew-openfortidesk (default: next to this repository)')
+    parser.add_argument('--tap', type=Path, default=Path(__file__).resolve().parent.parent.parent / 'homebrew-tunnelmac',
+                        help='checkout of luizmz94/homebrew-tunnelmac (default: next to this repository)')
     args = parser.parse_args()
     if not re.fullmatch(r'v\d+\.\d+\.\d+(?:-rc\.\d+)?', args.tag):
         parser.error('Invalid release tag')
@@ -101,10 +114,10 @@ def main():
     if release['isDraft'] or release['tagName'] != args.tag:
         raise SystemExit('Only an existing published release can populate the tap')
     version = args.tag[1:]
-    asset = f'OpenFortiDesk-{version}-arm64.zip'
+    asset = f'TunnelMac-{version}-arm64.zip'
     if asset not in [a['name'] for a in release['assets']]:
         raise SystemExit('The required release asset is absent')
-    with tempfile.TemporaryDirectory(prefix='openfortidesk-tap-') as tmp:
+    with tempfile.TemporaryDirectory(prefix='tunnelmac-tap-') as tmp:
         command('gh', 'release', 'download', args.tag, '--repo', REPO, '--pattern', asset,
                 '--pattern', 'SHA256SUMS', '--dir', tmp)
         root = Path(tmp)
@@ -112,7 +125,7 @@ def main():
         if f'{digest}  {asset}' not in (root / 'SHA256SUMS').read_text().splitlines():
             raise SystemExit('Published checksum mismatch')
         command('ditto', '-x', '-k', str(root / asset), str(root / 'unpacked'))
-        app = root / 'unpacked/OpenFortiDesk.app'
+        app = root / 'unpacked/TunnelMac.app'
         command(str(Path(__file__).resolve().parent / 'verify-bundle.sh'), str(app))
         if command('/usr/libexec/PlistBuddy', '-c', 'Print :CFBundleShortVersionString', str(app / 'Contents/Info.plist')) != version.split('-')[0]:
             raise SystemExit('Bundle version differs from the release tag')
@@ -121,7 +134,7 @@ def main():
         for binary in ('VPNGUI', 'VPNHelper', 'VPNSupervisor'):
             if command('lipo', '-archs', str(app / 'Contents/MacOS' / binary)) != 'arm64':
                 raise SystemExit('Release architectures do not match the cask')
-        target = args.tap / 'Casks/openfortidesk.rb'
+        target = args.tap / 'Casks/tunnelmac.rb'
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(cask(version, digest))
         print(target)

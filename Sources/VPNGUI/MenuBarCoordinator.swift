@@ -153,7 +153,7 @@ final class MenuBarCoordinator: ObservableObject {
         return parts.joined(separator: " · ")
     }
     var accessibilityDescription: String {
-        "OpenFortiDesk: \(summaryText)\(model.error != nil ? ", com erro pendente" : "")"
+        "TunnelMac: \(summaryText)\(model.error != nil ? ", com erro pendente" : "")"
     }
 
     /// Names repeated in the list; only these rows show the server to tell them apart.

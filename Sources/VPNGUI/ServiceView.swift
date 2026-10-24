@@ -54,7 +54,7 @@ struct ServicePanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             SheetHeader(symbol: service.health.symbol, tone: service.health.tone,
-                        title: service.health.title, subtitle: "OpenFortiDesk \(HelperConstants.releaseVersion) · build \(HelperConstants.build)")
+                        title: service.health.title, subtitle: "TunnelMac \(HelperConstants.releaseVersion) · build \(HelperConstants.build)")
             Text(showsClients ? clientsDetail : service.health.detail)
                 .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
             if let warning = service.bundleLocationWarning {
