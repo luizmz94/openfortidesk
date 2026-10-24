@@ -56,7 +56,7 @@ enum SettingsTab: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .general: return "Barra de menus, Dock e abertura ao iniciar sessão"
         case .updates: return "Verificação de novas versões no GitHub; a instalação é pelo Homebrew"
-        case .service: return "O componente do sistema que inicia o openfortivpn por você"
+        case .service: return "O componente do sistema que inicia o openfortivpn e o OpenVPN por você"
         case .about: return "Versão, licença e links do projeto"
         }
     }

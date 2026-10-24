@@ -28,48 +28,50 @@ struct ServiceStatusRow: View {
     }
 }
 
-/// Service management (the Serviço privilegiado tab): status, actionable guidance and
-/// the explicit actions. All logic stays in ServiceController.
+/// Service management (the Serviço privilegiado tab): status, the VPN clients in plain
+/// language (approve, approve again, update) and the service actions. Logic stays in
+/// ServiceController and ClientVersionChecker; no inventory is shown for the user to judge.
 struct ServicePanel: View {
     @ObservedObject var model: AppModel
     @ObservedObject private var service: ServiceController
+    @StateObject private var versions: ClientVersionChecker
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var confirmingRemoval = false
-    init(model: AppModel) {
+    @State private var copied: RuntimeKind?
+    init(model: AppModel, versions: ClientVersionChecker? = nil) {
         _model = ObservedObject(wrappedValue: model)
         _service = ObservedObject(wrappedValue: model.service)
+        _versions = StateObject(wrappedValue: versions ?? .production())
+    }
+
+    private var showsClients: Bool {
+        switch service.health {
+        case .runtimeMissing, .userNotAuthorized, .ready: return true
+        default: return false
+        }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             SheetHeader(symbol: service.health.symbol, tone: service.health.tone,
                         title: service.health.title, subtitle: "OpenFortiDesk \(HelperConstants.releaseVersion) · build \(HelperConstants.build)")
-            Text(service.health.detail).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-            if let runtime = service.status?.runtime {
-                runtimeSummary(runtime)
-            }
+            Text(showsClients ? clientsDetail : service.health.detail)
+                .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
             if let warning = service.bundleLocationWarning {
                 InlineNotice(tone: .warning, symbol: "folder.badge.questionmark", title: warning)
-            }
-            if let drift = service.sourceDrift {
-                InlineNotice(tone: .warning, symbol: "arrow.triangle.2.circlepath", title: drift)
             }
             if let message = service.message {
                 InlineNotice(tone: .neutral, symbol: "info.circle", title: message)
             }
-            if let inspection = service.inspection { inventory(inspection).transition(.opacity) }
-            HStack(spacing: 8) {
-                GlassGroup(spacing: 8) {
-                    HStack(spacing: 8) { actions }
-                }
-                Spacer(minLength: 8)
-                if service.busy {
-                    ProgressView().controlSize(.small).accessibilityLabel("Em andamento")
-                }
+            if showsClients { clients }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { serviceActions; Spacer(minLength: 0) }
+                VStack(alignment: .leading, spacing: 8) { serviceActions }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .animation(Motion.state(reduceMotion), value: service.inspection == nil)
+        .onAppear { versions.refresh(status: service.status) }
+        .onChange(of: service.status) { status in versions.refresh(status: status) }
         .confirmationDialog("Remover o serviço privilegiado?", isPresented: $confirmingRemoval) {
             Button("Remover serviço", role: .destructive) { service.remove(includeManagedFiles: false) }
             Button("Remover serviço e arquivos gerenciados", role: .destructive) { service.remove(includeManagedFiles: true) }
@@ -79,96 +81,139 @@ struct ServicePanel: View {
         }
     }
 
-    @ViewBuilder private var actions: some View {
+    private var clientsDetail: String {
+        if service.health == .userNotAuthorized {
+            return "Um administrador precisa aprovar um cliente VPN neste usuário do macOS antes da primeira conexão."
+        }
+        return service.health == .ready
+            ? "Conectar não pede senha de administrador enquanto o serviço estiver habilitado e íntegro."
+            : "Aprove o cliente VPN que você usa. É preciso fazer isso uma vez e depois de cada atualização dele."
+    }
+
+    // MARK: Clients
+
+    private var clients: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Clientes VPN").font(.headline).accessibilityAddTraits(.isHeader)
+                Spacer()
+                if versions.checking { ProgressView().controlSize(.small).accessibilityLabel("Consultando versões") }
+            }
+            VStack(spacing: 0) {
+                ForEach(Array(RuntimeKind.allCases.enumerated()), id: \.element) { index, kind in
+                    if index > 0 { Divider().padding(.leading, 44) }
+                    clientRow(kind)
+                }
+            }
+            .contentPanel()
+            Text("Aprovar faz uma cópia protegida do cliente instalado pelo Homebrew e pede a senha de administrador uma vez. O serviço só executa essa cópia: atualizar o Homebrew não muda nada até você aprovar de novo.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func clientRow(_ kind: RuntimeKind) -> some View {
+        let state = versions.state(kind, status: service.status)
+        let presentation = Self.presentation(kind, state)
+        return HStack(alignment: .center, spacing: 12) {
+            Image(systemName: presentation.symbol)
+                .symbolRenderingMode(.hierarchical)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(presentation.tone.color)
+                .frame(width: 22)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(kind == .openvpn ? "OpenVPN" : "openfortivpn (Fortinet)").font(.body.weight(.medium))
+                Text(presentation.text).font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let command = presentation.command {
+                    Text(command).font(.system(.callout, design: .monospaced)).textSelection(.enabled)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+            clientAction(kind, state, command: presentation.command)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+    }
+
+    @ViewBuilder private func clientAction(_ kind: RuntimeKind, _ state: ClientState, command: String?) -> some View {
+        if service.approvingKind == kind {
+            ProgressView().controlSize(.small).accessibilityLabel("Aprovando")
+        } else if let command {
+            Button(copied == kind ? "Copiado" : "Copiar comando") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(command, forType: .string)
+                copied = kind
+            }
+            .fixedSize()
+            .adaptiveButtonStyle()
+        } else if state.needsAction {
+            Button(service.status?.runtime(kind) == nil ? "Aprovar…" : "Aprovar de novo…") { service.approveClient(kind) }
+                .fixedSize()
+                .adaptiveButtonStyle(prominent: true)
+                .disabled(service.busy)
+        }
+    }
+
+    struct Presentation: Equatable {
+        var symbol: String
+        var tone: StatusTone
+        var text: String
+        var command: String?
+    }
+
+    static func presentation(_ kind: RuntimeKind, _ state: ClientState) -> Presentation {
+        let formula = kind.executableName
+        switch state {
+        case .notInstalled:
+            return Presentation(symbol: "arrow.down.circle", tone: .neutral,
+                                text: "Não instalado. Instale pelo Homebrew no Terminal e volte aqui para aprovar:",
+                                command: "brew install \(formula)")
+        case .notApproved(let installed, let latest):
+            if let latest {
+                return Presentation(symbol: "arrow.up.circle", tone: .warning,
+                                    text: "Versão \(installed ?? "instalada") desatualizada (atual: \(latest)). Atualize antes de aprovar:",
+                                    command: "brew upgrade \(formula)")
+            }
+            return Presentation(symbol: "exclamationmark.shield", tone: .warning,
+                                text: "Instalado\(installed.map { " (\($0))" } ?? ""), ainda não aprovado. Aprove para conectar com ele.", command: nil)
+        case .updateAvailable(let current, let latest):
+            return Presentation(symbol: "arrow.up.circle", tone: .warning,
+                                text: "Versão \(current) em uso; a \(latest) já está disponível. Atualize e depois aprove de novo:",
+                                command: "brew upgrade \(formula)")
+        case .approvalOutdated(let approved, let installed):
+            return Presentation(symbol: "arrow.triangle.2.circlepath", tone: .warning,
+                                text: "O app usa a cópia aprovada \(approved), mas o Homebrew agora tem \(installed ?? "outra versão"). Aprove de novo para usar a nova.",
+                                command: nil)
+        case .upToDate(let version):
+            return Presentation(symbol: "checkmark.seal", tone: .success, text: "Versão \(version), aprovada e atualizada.", command: nil)
+        }
+    }
+
+    // MARK: Service actions
+
+    @ViewBuilder private var serviceActions: some View {
         switch service.health {
         case .notRegistered, .notFound:
-            Button("Ativar serviço") { service.activate() }.adaptiveButtonStyle(prominent: true).disabled(service.busy)
+            Button("Ativar serviço") { service.activate() }.fixedSize().adaptiveButtonStyle(prominent: true).disabled(service.busy)
         case .requiresApproval:
-            Button("Abrir Ajustes") { service.openSettings() }.adaptiveButtonStyle(prominent: true)
+            Button("Abrir Ajustes") { service.openSettings() }.fixedSize().adaptiveButtonStyle(prominent: true)
         case .outdated:
-            Button("Atualizar serviço") { service.update() }.adaptiveButtonStyle(prominent: true).disabled(service.busy)
-        case .runtimeMissing, .userNotAuthorized, .ready:
-            Button(service.health == .ready ? "Reaprovar openfortivpn…" : "Aprovar openfortivpn…") {
-                service.inspect(candidate: BinaryLocator.defaultPath)
-            }
-            .adaptiveButtonStyle(prominent: service.health != .ready)
-            .disabled(service.busy || service.inspection != nil)
+            Button("Atualizar serviço") { service.update() }.fixedSize().adaptiveButtonStyle(prominent: true).disabled(service.busy)
         default:
             EmptyView()
         }
-        Button("Verificar novamente") { service.refresh() }.adaptiveButtonStyle().disabled(service.busy)
+        Button("Verificar novamente") {
+            service.refresh()
+            versions.refresh(status: service.status, force: true)
+        }
+        .fixedSize().adaptiveButtonStyle().disabled(service.busy)
         if service.isRegistered {
             Button("Remover serviço…", role: .destructive) { confirmingRemoval = true }
-                .adaptiveButtonStyle().disabled(service.busy)
+                .fixedSize().adaptiveButtonStyle().disabled(service.busy)
         }
-    }
-
-    private func runtimeSummary(_ runtime: RuntimeSummary) -> some View {
-        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 5) {
-            GridRow {
-                Text("openfortivpn").foregroundStyle(.secondary).gridColumnAlignment(.trailing)
-                Text(runtime.version).textSelection(.enabled)
-            }
-            GridRow {
-                Text("Aprovado em").foregroundStyle(.secondary)
-                Text(runtime.approvedAt.formatted(date: .abbreviated, time: .shortened))
-            }
-            GridRow {
-                Text("Origem").foregroundStyle(.secondary)
-                Text(runtime.sourcePath).font(.system(.callout, design: .monospaced))
-                    .lineLimit(1).truncationMode(.middle).textSelection(.enabled).help(runtime.sourcePath)
-            }
-        }
-        .font(.callout)
-        .accessibilityElement(children: .combine)
-    }
-
-    private func inventory(_ inspection: RuntimeInspection) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Inventário a aprovar").font(.headline).accessibilityAddTraits(.isHeader)
-                if let version = inspection.packageVersion {
-                    Text(version).font(.callout).foregroundStyle(.secondary)
-                }
-            }
-            ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(inspection.items, id: \.sourcePath) { item in
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 6) {
-                                Image(systemName: item.role == .executable ? "terminal" : "shippingbox")
-                                    .foregroundStyle(.secondary).accessibilityHidden(true)
-                                Text(item.role == .executable ? "executável" : "biblioteca").font(.caption.weight(.semibold))
-                                if item.mutableLocation {
-                                    Text("local alterável sem administrador").font(.caption).foregroundStyle(.orange)
-                                }
-                            }
-                            Text(item.sourcePath).font(.system(.caption, design: .monospaced))
-                            Text("SHA-256 \(item.sha256)").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
-                        }
-                        .textSelection(.enabled)
-                        .accessibilityElement(children: .combine)
-                    }
-                    Divider()
-                    Text("Bibliotecas do sistema (protegidas pelo macOS): \(inspection.systemLibraries.joined(separator: ", "))")
-                        .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(12)
-            }
-            .frame(maxHeight: 200)
-            .contentPanel()
-            ForEach(inspection.warnings, id: \.self) {
-                InlineNotice(tone: .warning, symbol: "exclamationmark.triangle", title: $0)
-            }
-            Text("A aprovação copia exatamente estes arquivos para \(HelperConstants.stateDirectory) (root, somente leitura), reescreve só os caminhos das bibliotecas para a própria cópia e preserva licenças. Conectar nunca atualiza essa cópia.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Spacer()
-                Button("Cancelar") { service.inspection = nil }
-                Button("Aprovar com senha de administrador…") { service.approve() }
-                    .adaptiveButtonStyle(prominent: true).disabled(service.busy)
-            }
+        if service.busy && service.approvingKind == nil {
+            ProgressView().controlSize(.small).accessibilityLabel("Em andamento")
         }
     }
 }

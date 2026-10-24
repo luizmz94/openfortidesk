@@ -215,7 +215,7 @@ struct MenuBarRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(connection.name).font(.body.weight(.medium)).lineLimit(2).truncationMode(.middle)
                 if showsServer {
-                    Text("\(connection.server):\(String(connection.port))").font(.caption).foregroundStyle(.secondary)
+                    Text(connection.endpoint).font(.caption).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.middle)
                 }
                 HStack(spacing: 5) {
@@ -228,7 +228,7 @@ struct MenuBarRow: View {
                 .font(.caption).foregroundStyle(session.state.tone == .danger ? AnyShapeStyle(Color.red) : AnyShapeStyle(.secondary))
                 .lineLimit(1)
             }
-            .help("\(connection.name) — \(connection.server):\(String(connection.port))")
+            .help("\(connection.name) — \(connection.endpoint)")
             .accessibilityElement(children: .combine)
             Spacer(minLength: 6)
             VStack(alignment: .trailing, spacing: 3) {

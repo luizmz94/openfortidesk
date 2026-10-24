@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.4.0-rc.1 — unreleased
+
+- OpenVPN support next to Fortinet. **Importar perfil OpenVPN…** (⌘I) reads a single
+  `.ovpn`/`.conf` with inline keys or a Viscosity `.visc` folder with external
+  `ca`/`cert`/`key`/`ta` files. Referenced files are read only from inside the
+  profile's folder and copied inline into a private 0600 profile; originals are never
+  modified. Passwords stay in Keychain.
+- Profiles are reduced to an allowlist of tunnel directives. Scripts (`up`, `down`,
+  `plugin`, `script-security`…), `setenv`, management, logs/status files, OpenSSL
+  providers and identity changes are removed with a warning; unknown directives,
+  proxies, PKCS#12, `secret` and encrypted keys refuse the import. The helper checks
+  the same allowlist again before root runs anything.
+- `auth RSA-SHA256` (refused by OpenVPN 2.7: "Message hash algorithm not found") is
+  detected at import and from the connection log; switching the app's copy to
+  `auth SHA256` requires explicit confirmation.
+- The privileged service approves and freezes an OpenVPN 2.7+ installation like
+  openfortivpn, including its `dns-updown` script, passed explicitly so nothing runs
+  from the writable Homebrew prefix. Credentials travel inline in the protected,
+  unlinked config descriptor (`--config /dev/fd/3`), never in arguments or files.
+- Helper protocol 3: update the service after upgrading.
+
 ## 0.3.0-rc.5 — 2026-10-24
 
 - Fix a crash at launch in rc.4: SwiftUI writes the menu bar icon state back while

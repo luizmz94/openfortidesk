@@ -138,6 +138,7 @@ public final class HelperCore {
             case .hello: break
             case .status: respond(.status(self.status(for: client)))
             case .start(let connection): respond(self.start(connection, for: client))
+            case .startOpenVPN(let connection): respond(self.startOpenVPN(connection, for: client))
             case .stop(let token): respond(self.stop(token, for: client))
             case .stopAll:
                 for session in self.sessions.values where session.ownerID == client.id { session.stop() }
@@ -153,14 +154,12 @@ public final class HelperCore {
             case .cancelMaintenance:
                 if self.maintenanceOwner == client.id { self.maintenanceOwner = nil }
                 respond(.done)
-            case .inspectRuntime(let path):
-                let uid = client.uid
-                self.work.async {
-                    do { respond(.inspection(try RuntimeInspector.inspect(candidate: path, requester: uid).report)) }
-                    catch { respond(.failure(Self.wrap(error))) }
-                }
+            case .inspectRuntime(let path): self.inspect(path: path, kind: .openfortivpn, client: client, respond: respond)
+            case .inspectOpenVPNRuntime(let path): self.inspect(path: path, kind: .openvpn, client: client, respond: respond)
             case .approveRuntime(let path, let digest, let authorization):
-                self.approve(path: path, digest: digest, authorization: authorization, client: client, respond: respond)
+                self.approve(path: path, digest: digest, authorization: authorization, kind: .openfortivpn, client: client, respond: respond)
+            case .approveOpenVPNRuntime(let path, let digest, let authorization):
+                self.approve(path: path, digest: digest, authorization: authorization, kind: .openvpn, client: client, respond: respond)
             case .removeManagedFiles(let authorization):
                 self.removeManagedFiles(authorization: authorization, client: client, respond: respond)
             }
@@ -173,40 +172,91 @@ public final class HelperCore {
         return HelperFailure(.internalError, error.localizedDescription)
     }
 
+    private func inspect(path: String, kind: RuntimeKind, client: Client, respond: @escaping (HelperResponse) -> Void) {
+        let uid = client.uid
+        work.async {
+            do { respond(.inspection(try RuntimeInspector.inspect(candidate: path, requester: uid, kind: kind).report)) }
+            catch { respond(.failure(Self.wrap(error))) }
+        }
+    }
+
     func status(for client: Client) -> HelperStatus {
         var runtime: RuntimeSummary?
         var problem: String?
         do { runtime = try store.loadActive().summary } catch { problem = Self.wrap(error).message }
+        var openVPN: RuntimeSummary?
+        var openVPNProblem: String?
+        do { openVPN = try store.loadActive(.openvpn).summary } catch { openVPNProblem = Self.wrap(error).message }
         let authorized = (try? store.loadState().authorizedUsers.contains(client.uid)) ?? false
         let stale = registry.stale(excluding: Set(sessions.keys)).filter { $0.uid == client.uid }.map(\.connectionID)
         return HelperStatus(protocolVersion: HelperConstants.protocolVersion, helperVersion: configuration.helperVersion,
                             runtime: runtime, runtimeProblem: problem, userAuthorized: authorized,
                             activeSessions: sessions.values.filter { $0.ownerID == client.id }.count,
-                            stoppingConnections: Array(Set(stale)))
+                            stoppingConnections: Array(Set(stale)),
+                            openVPNRuntime: openVPN, openVPNRuntimeProblem: openVPNProblem)
+    }
+
+    /// Checks shared by every client kind, before anything is prepared.
+    private func admit(_ connectionID: UUID, for client: Client) -> HelperFailure? {
+        guard maintenanceOwner == nil else { return HelperFailure(.busy, "Serviço em manutenção.") }
+        guard client.uid != 0 else { return HelperFailure(.userNotAuthorized, "O app não deve rodar como root.") }
+        guard (try? store.loadState().authorizedUsers.contains(client.uid)) == true else {
+            return HelperFailure(.userNotAuthorized, "Este usuário do macOS ainda não foi autorizado por um administrador para usar o serviço.")
+        }
+        // A finished runner (supervisor reaped and cleaned up) only waits for the delivery of its
+        // final events; it must not block the next start, e.g. the SAML fallback after a cookie.
+        if sessions.values.contains(where: { !$0.finished && $0.uid == client.uid && $0.connectionID == connectionID }) {
+            return HelperFailure(.duplicateSession, "Esta conexão já tem uma sessão ativa ou encerrando.")
+        }
+        if registry.stale(excluding: Set(sessions.keys)).contains(where: { $0.uid == client.uid && $0.connectionID == connectionID }) {
+            return HelperFailure(.busy, "A sessão anterior desta conexão ainda está encerrando. Aguarde a limpeza e tente novamente.")
+        }
+        guard sessions.values.filter({ !$0.finished && $0.ownerID == client.id }).count < HelperConstants.maximumSessionsPerClient else {
+            return HelperFailure(.limitReached, "Limite de conexões simultâneas atingido.")
+        }
+        return nil
+    }
+
+    private func startOpenVPN(_ request: OpenVPNRequest, for client: Client) -> HelperResponse {
+        if let refusal = admit(request.connectionID, for: client) { return .failure(refusal) }
+        let runtime: ActiveRuntime
+        do { runtime = try store.loadActive(.openvpn) } catch { return .failure(Self.wrap(error)) }
+        var content: Data
+        do {
+            content = Data(try OpenVPNConfigRenderer.render(profile: request.profile, username: request.username,
+                                                            password: request.password, dnsScript: runtime.dnsScript).utf8)
+        } catch { return .failure(Self.wrap(error)) }
+        defer { content.resetBytes(in: 0..<content.count) }
+        let plan = LaunchPlan(clientArguments: [], mode: .none)
+        return launch(connectionID: request.connectionID, client: client, runtime: runtime, content: content, cookie: nil,
+                      supervisorArguments: ["--openvpn", runtime.executable], plan: plan,
+                      secrets: (request.password?.count ?? 0) >= 4 ? [request.password!] : [])
     }
 
     private func start(_ request: ConnectionRequest, for client: Client) -> HelperResponse {
-        guard maintenanceOwner == nil else { return .failure(HelperFailure(.busy, "Serviço em manutenção.")) }
-        guard client.uid != 0 else { return .failure(HelperFailure(.userNotAuthorized, "O app não deve rodar como root.")) }
-        guard (try? store.loadState().authorizedUsers.contains(client.uid)) == true else {
-            return .failure(HelperFailure(.userNotAuthorized, "Este usuário do macOS ainda não foi autorizado por um administrador para usar o serviço."))
-        }
+        if let refusal = admit(request.connectionID, for: client) { return .failure(refusal) }
         let runtime: ActiveRuntime
         do { runtime = try store.loadActive() } catch { return .failure(Self.wrap(error)) }
         let plan: LaunchPlan
         do { plan = try request.validatedPlan(capabilities: runtime.manifest.capabilities) }
         catch { return .failure(Self.wrap(error)) }
-        // A finished runner (supervisor reaped and cleaned up) only waits for the delivery of its
-        // final events; it must not block the next start, e.g. the SAML fallback after a cookie.
-        if sessions.values.contains(where: { !$0.finished && $0.uid == client.uid && $0.connectionID == request.connectionID }) {
-            return .failure(HelperFailure(.duplicateSession, "Esta conexão já tem uma sessão ativa ou encerrando."))
-        }
-        if registry.stale(excluding: Set(sessions.keys)).contains(where: { $0.uid == client.uid && $0.connectionID == request.connectionID }) {
-            return .failure(HelperFailure(.busy, "A sessão anterior desta conexão ainda está encerrando. Aguarde a limpeza e tente novamente."))
-        }
-        guard sessions.values.filter({ !$0.finished && $0.ownerID == client.id }).count < HelperConstants.maximumSessionsPerClient else {
-            return .failure(HelperFailure(.limitReached, "Limite de conexões simultâneas atingido."))
-        }
+        var content: Data
+        do {
+            content = Data(try ConfigRenderer.render(host: request.host, port: request.port, username: request.username,
+                                                     password: request.authentication == .password ? request.password : nil,
+                                                     trustedCertificate: request.trustedCertificate).utf8)
+        } catch { return .failure(Self.wrap(error)) }
+        defer { content.resetBytes(in: 0..<content.count) }
+        return launch(connectionID: request.connectionID, client: client, runtime: runtime, content: content,
+                      cookie: plan.usesCookie ? request.cookie : nil,
+                      supervisorArguments: plan.supervisorArguments(binary: runtime.executable), plan: plan,
+                      secrets: plan.usesCookie ? [request.cookie ?? ""] : [])
+    }
+
+    /// Supervisor start shared by every client: protected config descriptor, optional cookie
+    /// pipe, fixed environment, session bookkeeping and the ordered event reader.
+    private func launch(connectionID: UUID, client: Client, runtime: ActiveRuntime, content: Data, cookie: String?,
+                        supervisorArguments: [String], plan: LaunchPlan, secrets: [String]) -> HelperResponse {
         let supervisor: String
         do { supervisor = try store.preparedSupervisor(source: configuration.supervisorSource, requirement: configuration.supervisorRequirement) }
         catch { return .failure(Self.wrap(error)) }
@@ -214,14 +264,10 @@ public final class HelperCore {
         defer { if configFD >= 0 { close(configFD) }; if cookieFD >= 0 { close(cookieFD) } }
         do {
             try store.ownership.verifyChain(store.work)
-            var content = Data(try ConfigRenderer.render(host: request.host, port: request.port, username: request.username,
-                                                         password: request.authentication == .password ? request.password : nil,
-                                                         trustedCertificate: request.trustedCertificate).utf8)
-            defer { content.resetBytes(in: 0..<content.count) }
             configFD = try ProtectedDescriptor.anonymousFile(content, directory: store.work)
-            if plan.usesCookie, let cookie = request.cookie { cookieFD = try ProtectedDescriptor.pipe(Data(cookie.utf8)) }
+            if let cookie { cookieFD = try ProtectedDescriptor.pipe(Data(cookie.utf8)) }
         } catch { return .failure(Self.wrap(error)) }
-        let argv = [supervisor] + plan.supervisorArguments(binary: runtime.executable)
+        let argv = [supervisor] + supervisorArguments
         let environment = RuntimeEnvironment.list(runtime.environment)
         var pid: pid_t = 0
         var cArguments: [UnsafeMutablePointer<CChar>?] = argv.map { strdup($0) } + [nil]
@@ -237,7 +283,7 @@ public final class HelperCore {
         }
         let token = UUID().uuidString
         let pump = EventPump(token: token, sink: client.sink)
-        let runner = SessionRunner(token: token, ownerID: client.id, uid: client.uid, connectionID: request.connectionID,
+        let runner = SessionRunner(token: token, ownerID: client.id, uid: client.uid, connectionID: connectionID,
                                    supervisorPID: pid, control: control, queue: queue, pump: pump)
         runner.onFinish = { [weak self] runner in
             guard let self else { return }
@@ -251,8 +297,8 @@ public final class HelperCore {
             if runner.pump.sink == nil || runner.pump.isDrained { finish() } else { runner.pump.onIdle = finish }
         }
         sessions[token] = runner
-        registry.add(token: token, uid: client.uid, connectionID: request.connectionID, pid: pid)
-        runner.startReading(captureCookie: plan.mode == .capture, secrets: plan.usesCookie ? [request.cookie ?? ""] : [])
+        registry.add(token: token, uid: client.uid, connectionID: connectionID, pid: pid)
+        runner.startReading(captureCookie: plan.mode == .capture, secrets: secrets)
         return .started(token: token, plan: plan)
     }
 
@@ -265,12 +311,13 @@ public final class HelperCore {
         return .stopped(remaining: sessions.values.filter { $0.ownerID == client.id }.count)
     }
 
-    private func approve(path: String, digest: String, authorization: Data, client: Client, respond: @escaping (HelperResponse) -> Void) {
+    private func approve(path: String, digest: String, authorization: Data, kind: RuntimeKind, client: Client,
+                         respond: @escaping (HelperResponse) -> Void) {
         guard client.uid != 0 else { respond(.failure(HelperFailure(.userNotAuthorized, "O app não deve rodar como root."))); return }
         let uid = client.uid
         work.async {
             do {
-                let inventory = try RuntimeInspector.inspect(candidate: path, requester: uid)
+                let inventory = try RuntimeInspector.inspect(candidate: path, requester: uid, kind: kind)
                 guard inventory.digest == digest else {
                     throw HelperFailure(.runtimeRejected, "A instalação mudou desde a inspeção. Revise o inventário novamente antes de aprovar.")
                 }

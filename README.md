@@ -1,6 +1,7 @@
 # OpenFortiDesk
 
-Native macOS GUI for the original [openfortivpn](https://github.com/adrienverge/openfortivpn),
+Native macOS GUI for the original [openfortivpn](https://github.com/adrienverge/openfortivpn)
+and, since 0.4.0, for [OpenVPN](https://openvpn.net/community/) 2.7+ profiles,
 using SwiftUI/AppKit and a bundled SMAppService/XPC privileged helper. Independent
 of, and not affiliated with, Fortinet or the openfortivpn project. No VPN executable
 or Homebrew libraries are bundled in the distributed app.
@@ -54,7 +55,30 @@ URL. A rejected cookie permits one fresh browser login. Reconnect after a previo
 established tunnel is limited to delays of 10, 20 and 40 seconds; rejected credentials,
 TLS failures and initial connection failures do not loop automatically.
 
-No OTP/PIN form or client-certificate UI is implemented. Certificate failures require
+### OpenVPN
+
+Install OpenVPN 2.7 or later (`brew install openvpn`), then use **Aprovar OpenVPN…**
+in Configurações → Serviço privilegiado. The approval freezes the executable, its
+libraries and the `dns-updown` script that configures the tunnel's DNS.
+
+Use **Importar perfil OpenVPN…** (⌘I) with a single `.ovpn`/`.conf` that carries its
+keys inline, or with a Viscosity `.visc` folder whose profile references `ca.crt`,
+`cert.crt`, `key.key` and `ta.key`. Referenced files must sit inside the profile's
+folder (no absolute paths, `..` or links leaving it); they are copied inline into a
+private profile under `~/Library/Application Support/VPNGUI/OpenVPN` (0600). The
+originals are not modified; a world-readable original key produces a warning.
+Profiles that use `auth-user-pass` ask for a username and password (Keychain).
+
+Only tunnel directives are kept. Scripts, plugins, `setenv`, management interfaces,
+log/status files, OpenSSL providers and Windows-only options are removed with a
+warning; unknown directives, proxies, PKCS#12, static `secret` keys and
+password-protected private keys refuse the import. The helper repeats the check
+and adds its own `script-security`, `dns-updown`, `auth-retry none` and inline
+credentials. `auth RSA-SHA256` is offered as `auth SHA256` only after confirmation.
+OpenVPN reconnects internally; `AUTH_FAILED` blocks retries until the credentials
+are reviewed.
+
+No OTP/PIN form or client-certificate UI is implemented for Fortinet. Certificate failures require
 explicit review and approval of the profile's trusted digest; TLS is not disabled.
 
 ## Settings

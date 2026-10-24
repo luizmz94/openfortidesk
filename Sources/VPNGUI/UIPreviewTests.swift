@@ -87,6 +87,23 @@ enum UIPreviewTests {
             s[3].state = .disconnecting; s[3].wantsDisconnect = true
             s[4].authenticationRejected = true; s[4].state = .failed
 
+            let imported = try OpenVPNImporter.importText(OpenVPNTests.singleFile.replacingOccurrences(of: "client\n", with: "client\nauth-user-pass\n"),
+                                                          baseDirectory: root, suggestedName: "Summit OpenVPN", source: "~/Downloads/Summit.ovpn")
+            var openVPN = Connection(name: "Summit OpenVPN", username: "luiz.carlos", kind: .openvpn, openVPN: imported.summary)
+            openVPN.openVPN?.warnings.append("O arquivo original key.key pode ser lido por outros usuários do Mac (recomendado: chmod 600). A cópia do app é privada.")
+            created.append(openVPN.id)
+            let openVPNSession = model.manager.session(openVPN.id)
+            defer { openVPNSession.state = .disconnected }
+            openVPNSession.state = .failed
+            openVPNSession.digestFix = imported.digestFix
+            openVPNSession.logs = ["Message hash algorithm 'RSA-SHA256' not found", "Exiting due to fatal error"]
+            var bothStatus = HelperTests.readyStatus()
+            bothStatus.openVPNRuntime = RuntimeSummary(id: "ovpn", version: "2.7.8", approvedAt: Date(), capabilities: RuntimeCapabilities(help: ""),
+                                                       sourcePath: "/opt/homebrew/Cellar/openvpn/2.7.8_1/sbin/openvpn", sourceSHA256: "0")
+            let bothService = ServiceController(policy: .unavailable(reason: "verificações locais"), registrar: nil, client: nil)
+            bothService.useForLocalChecks(status: bothStatus)
+            let bothModel = AppModel(store: try JSONStore(directory: root.appendingPathComponent("both")), passwords: passwords, service: bothService)
+
             let unavailableModel = AppModel(store: try JSONStore(directory: root.appendingPathComponent("unavailable")),
                                             passwords: passwords,
                                             service: ServiceController(policy: .unavailable(reason: "ad hoc"), registrar: nil, client: nil))
@@ -139,9 +156,17 @@ enum UIPreviewTests {
                            NSSize(width: 520, height: 400), "certificate-sheet")
                 try render(ServicePanel(model: unavailableModel).padding(20), NSSize(width: 620, height: 360), "service-panel")
                 try render(ServiceStatusRow(service: model.service) {}, NSSize(width: 300, height: 56), "service-row")
+                try render(ConnectionEditor(model: model, connection: openVPN, pendingImport: imported, saved: {}), NSSize(width: 560, height: 640), "editor-openvpn-import")
+                try render(ConnectionDetail(connection: openVPN, session: openVPNSession, model: model, edit: {}, delete: {}),
+                           NSSize(width: 640, height: 560), "detail-openvpn-digest")
+                let versions = ClientVersionChecker(transport: DisabledUpdateTransport())
+                versions.setForChecks(local: [.openvpn: .init(path: "/opt/homebrew/sbin/openvpn", exists: true, version: "2.7.8", sourceChanged: false),
+                                              .openfortivpn: .init(path: "/opt/homebrew/bin/openfortivpn", exists: true, version: "1.24.1", sourceChanged: false)],
+                                      latest: [.openvpn: "2.7.10", .openfortivpn: "1.24.1"])
+                try render(ServicePanel(model: bothModel, versions: versions).padding(20), NSSize(width: 620, height: 520), "service-panel-both")
             }
             let files = try FileManager.default.contentsOfDirectory(atPath: output.path).filter { $0.hasSuffix(".png") }
-            try require(files.count == 28, "Renders esperados: 28, gerados: \(files.count)")
+            try require(files.count == 34, "Renders esperados: 34, gerados: \(files.count)")
         }
         return failures
     }

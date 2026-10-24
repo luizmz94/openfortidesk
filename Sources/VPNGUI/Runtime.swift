@@ -91,6 +91,8 @@ final class Session: ObservableObject, Identifiable {
     @Published var authenticationRejected = false
     @Published var connectedAt: Date?
     @Published var suggestedCertificate: String?
+    /// OpenVPN refused `auth RSA-SHAx`; the app offers the digest fix (never applied alone).
+    @Published var digestFix: OpenVPNCompatibility.DigestFix?
     var certificateValidationFailed = false
     var retryBlocked = false
     private var conflictingCertificates = false
@@ -130,7 +132,7 @@ final class Session: ObservableObject, Identifiable {
         if logs.count > 1500 { logs.removeFirst(logs.count - 1500) }
     }
     func clearLogs() { logs.removeAll(keepingCapacity: true) }
-    func begin(retrying: Bool = false) {
+    func begin(retrying: Bool = false, client: String = "openfortivpn") {
         reconnectTask?.cancel(); reconnectTask = nil
         if !retrying { wasConnected = false; reconnectAttempts = 0 }
         connectedAt = nil
@@ -153,9 +155,45 @@ final class Session: ObservableObject, Identifiable {
         reachedGateway = false
         tunnelUp = false
         tunnelHandled = false
-        log("Iniciando conexão. Rotas e DNS serão tratados pelo openfortivpn; redes sobrepostas podem gerar conflitos.")
+        digestFix = nil
+        log("Iniciando conexão. Rotas e DNS serão tratados pelo \(client); redes sobrepostas podem gerar conflitos.")
+    }
+    /// OpenVPN 2.7 messages (verb 3). openvpn reconnects internally (ping-restart, retries);
+    /// the app only marks the state and blocks its own retry after credential/config errors.
+    func acceptOpenVPN(_ line: String) {
+        if line.contains("AUTH_FAILED") {
+            authenticationRejected = true
+            retryBlocked = true
+        }
+        if let fix = OpenVPNCompatibility.digestFix(fromLog: line) {
+            digestFix = fix
+            retryBlocked = true
+        }
+        if line.range(of: #"VERIFY ERROR|Options error|Cannot load|Exiting due to fatal error|private key password verification failed"#,
+                      options: .regularExpression) != nil {
+            retryBlocked = true
+        }
+        if line.contains("Initialization Sequence Completed") && !wantsDisconnect {
+            if connectedAt == nil { connectedAt = Date() }
+            wasConnected = true
+            tunnelUp = true
+            state = .connected
+        } else if line.contains("process restarting") && state == .connected && !wantsDisconnect {
+            // ping-restart or a lost server: openvpn keeps the process and reconnects itself.
+            state = .connecting
+            connectedAt = nil
+            tunnelUp = false
+        }
+        log(line)
+        if line.contains("AUTH_FAILED") {
+            log("O servidor recusou usuário ou senha. Confira as credenciais antes de tentar de novo.")
+        }
+        if let fix = digestFix, line.contains("Message hash algorithm") {
+            log("O perfil usa auth \(fix.from), que o OpenVPN não aceita. O app pode corrigir a cópia do perfil para auth \(fix.to).")
+        }
     }
     func accept(_ line: String, connection: Connection, openBrowser: (URL) -> Void) {
+        if connection.isOpenVPN { acceptOpenVPN(line); return }
         if line.range(of: #"(?i)^ERROR:.*(?:certificate|\bTLS\b|\bSSL\b|authenticate|SAML|No password|No cookie|\bOTP\b)"#, options: .regularExpression) != nil {
             retryBlocked = true
         }
@@ -227,6 +265,7 @@ final class VPNManager: ObservableObject {
     struct LaunchHarness {
         var help: String
         var launched: (Session, ConnectionRequest, LaunchPlan) -> Void
+        var openVPNLaunched: ((Session, OpenVPNRequest) -> Void)? = nil
     }
     var harness: LaunchHarness?
     var changed: (() -> Void)?
@@ -238,11 +277,15 @@ final class VPNManager: ObservableObject {
         sessions[id] = session
         return session
     }
-    func connect(_ connection: Connection, password: String?, retrying: Bool = false) {
+    func connect(_ connection: Connection, password: String?, retrying: Bool = false, openVPNProfile: String? = nil) {
         let session = session(connection.id)
         guard !session.state.active || (retrying && session.state == .reconnecting) else { return }
-        session.begin(retrying: retrying)
+        session.begin(retrying: retrying, client: connection.isOpenVPN ? "OpenVPN" : "openfortivpn")
         session.secret = password
+        if connection.isOpenVPN {
+            startOpenVPN(session, connection: connection, password: password, profile: openVPNProfile)
+            return
+        }
         cookieAttempts.removeValue(forKey: connection.id)
         if connection.authentication == .saml, let cookie = savedCookie(for: connection, session: session) {
             // One attempt without browser or callback port; the gate is not needed.
@@ -282,7 +325,7 @@ final class VPNManager: ObservableObject {
             capabilities = RuntimeCapabilities(help: harness.help)
         } else {
             guard let transport else { end(session, exit: nil, error: "Serviço privilegiado indisponível."); return }
-            if let reason = transport.unavailableReason { end(session, exit: nil, error: reason); return }
+            if let reason = transport.unavailableReason(for: .openfortivpn) { end(session, exit: nil, error: reason); return }
             guard let available = transport.capabilities else {
                 end(session, exit: nil, error: "O serviço não informou o openfortivpn aprovado."); return
             }
@@ -330,10 +373,38 @@ final class VPNManager: ObservableObject {
         if let harness { harness.launched(session, request, plan); return }
         launch(session, request: request, plan: plan)
     }
+    private func startOpenVPN(_ session: Session, connection: Connection, password: String?, profile: String?) {
+        session.state = .authorizing
+        changed?()
+        if harness == nil {
+            guard let transport else { end(session, exit: nil, error: "Serviço privilegiado indisponível."); return }
+            if let reason = transport.unavailableReason(for: .openvpn) { end(session, exit: nil, error: reason); return }
+        }
+        if session.wantsDisconnect { end(session, exit: 0); return }
+        let request: OpenVPNRequest
+        do {
+            let c = try connection.validated()
+            guard let profile else { throw AppFailure("Perfil OpenVPN indisponível; importe-o novamente.") }
+            let credentials = c.usesPassword
+            request = OpenVPNRequest(connectionID: c.id, profile: profile, username: credentials ? c.username : nil,
+                                     password: credentials ? password : nil)
+        } catch { end(session, exit: nil, error: error.localizedDescription); return }
+        running[session.id] = connection
+        if let harness { harness.openVPNLaunched?(session, request); return }
+        guard let transport else { end(session, exit: nil, error: "Serviço privilegiado indisponível."); return }
+        launch(session, plan: LaunchPlan(clientArguments: [], mode: .none)) { completion in
+            transport.startOpenVPN(request, completion: completion)
+        }
+    }
     private func launch(_ session: Session, request: ConnectionRequest, plan: LaunchPlan) {
         guard let transport else { end(session, exit: nil, error: "Serviço privilegiado indisponível."); return }
+        launch(session, plan: plan) { completion in transport.start(request, completion: completion) }
+    }
+    private func launch(_ session: Session, plan: LaunchPlan,
+                        send: (@escaping (Result<(String, LaunchPlan), HelperFailure>) -> Void) -> Void) {
+        guard let transport else { end(session, exit: nil, error: "Serviço privilegiado indisponível."); return }
         let generation = session.generation
-        transport.start(request) { [weak self] result in
+        send { [weak self] result in
             guard let self else { return }
             guard session.generation == generation, session.state.active else {
                 // Superseded while starting: never leave an orphan session in the helper.

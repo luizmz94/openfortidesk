@@ -1,12 +1,15 @@
 // Per-connection supervisor started by the privileged helper (VPNHelper).
 // No installation, shell, PATH lookup, or VPN protocol of its own.
 //
-// Usage: VPNSupervisor [--cookie-fd] <client> [client arguments...]
+// Usage: VPNSupervisor [--cookie-fd] <client> [client arguments...]   (openfortivpn)
+//        VPNSupervisor --openvpn <client>                              (openvpn, no other argument)
 //   fd 0      control channel: "STOP\n" or EOF requests a normal stop
 //   fd 1, 2   output channel (the same socket as fd 0)
 //   fd 3      protected configuration: an already-unlinked regular file, mode 0600
 //   fd 4      with --cookie-fd: SAML session cookie, read once and validated
 // The helper builds the client arguments itself; secrets never travel in argv/env.
+// openfortivpn reads fd 3 with "-c /dev/fd/3"; openvpn with "--config /dev/fd/3", where the
+// helper has already inlined key material and credentials.
 #define __STDC_WANT_LIB_EXT1__ 1 // memset_s
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -99,10 +102,15 @@ static int load_cookie(int *descriptor) {
 }
 
 int main(int argc, char **argv) {
-    int use_cookie = 0;
+    int use_cookie = 0, openvpn = 0;
     if (argc >= 2 && strcmp(argv[1], "--cookie-fd") == 0) {
         use_cookie = 1;
         argv += 1; argc -= 1;
+    } else if (argc >= 2 && strcmp(argv[1], "--openvpn") == 0) {
+        openvpn = 1;
+        argv += 1; argc -= 1;
+        // Everything else is in the protected configuration.
+        if (argc != 2) { errno = EINVAL; return fail("argumentos inválidos para openvpn"); }
     }
     if (argc < 2 || argv[1][0] != '/') { errno = EINVAL; return fail("argumentos inválidos"); }
     for (int i = 2; i < argc; ++i) {
@@ -130,7 +138,7 @@ int main(int argc, char **argv) {
     arguments[position++] = argv[1];
     for (int i = 2; i < argc; ++i) arguments[position++] = argv[i];
     if (cookie >= 0) arguments[position++] = "--cookie-on-stdin";
-    arguments[position++] = "-c";
+    arguments[position++] = openvpn ? "--config" : "-c";
     arguments[position++] = "/dev/fd/3";
     arguments[position] = NULL;
 

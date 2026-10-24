@@ -24,6 +24,9 @@ struct RuntimeManifest: Codable {
     var systemLibraries: [String]
     var packageVersion: String?
     var notes: [String]
+    /// nil in manifests written before OpenVPN support: openfortivpn.
+    var kind: RuntimeKind?
+    var runtimeKind: RuntimeKind { kind ?? .openfortivpn }
 }
 
 struct HelperState: Codable {
@@ -31,6 +34,21 @@ struct HelperState: Codable {
     var activeRuntime: String?
     var previousRuntime: String?
     var authorizedUsers: [UInt32] = []
+    var activeOpenVPNRuntime: String?
+    var previousOpenVPNRuntime: String?
+
+    func active(_ kind: RuntimeKind) -> String? { kind == .openvpn ? activeOpenVPNRuntime : activeRuntime }
+    mutating func activate(_ id: String, kind: RuntimeKind) {
+        switch kind {
+        case .openfortivpn:
+            if activeRuntime != id { previousRuntime = activeRuntime }
+            activeRuntime = id
+        case .openvpn:
+            if activeOpenVPNRuntime != id { previousOpenVPNRuntime = activeOpenVPNRuntime }
+            activeOpenVPNRuntime = id
+        }
+    }
+    var kept: [String] { [activeRuntime, previousRuntime, activeOpenVPNRuntime, previousOpenVPNRuntime].compactMap { $0 } }
 }
 
 /// A verified, ready-to-execute runtime. Valid only for the request being served.
@@ -39,6 +57,11 @@ public struct ActiveRuntime {
     public let executable: String
     let manifest: RuntimeManifest
     public var version: String { manifest.version }
+    public var kind: RuntimeKind { manifest.runtimeKind }
+    /// Frozen OpenVPN dns-updown script, when the approved installation shipped one.
+    public var dnsScript: String? {
+        manifest.files.contains { $0.path == "libexec/dns-updown" } ? root + "/libexec/dns-updown" : nil
+    }
     public var files: [String] { manifest.files.map(\.path) }
     public var environment: [String: String] { RuntimeEnvironment.variables(root: root) }
     public var summary: RuntimeSummary {
@@ -133,17 +156,18 @@ public final class RuntimeStore {
 
     // MARK: Verification (every start)
 
-    public func loadActive() throws -> ActiveRuntime {
+    public func loadActive(_ kind: RuntimeKind = .openfortivpn) throws -> ActiveRuntime {
         let state = try loadState()
-        guard let id = state.activeRuntime, Self.validID(id) else {
-            throw failure(.runtimeUnavailable, "Nenhum openfortivpn aprovado para o serviço.")
+        guard let id = state.active(kind), Self.validID(id) else {
+            throw failure(.runtimeUnavailable, "Nenhum \(kind.title) aprovado para o serviço.")
         }
         let base = runtimes + "/" + id
         try ownership.verifyChain(base + "/manifest.json")
         let (data, _) = try SecureFile.read(base + "/manifest.json", limit: 1024 * 1024)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .secondsSince1970
-        guard let manifest = try? decoder.decode(RuntimeManifest.self, from: data), manifest.format == 1, manifest.id == id else {
+        guard let manifest = try? decoder.decode(RuntimeManifest.self, from: data), manifest.format == 1, manifest.id == id,
+              manifest.runtimeKind == kind else {
             throw failure(.runtimeRejected, "Manifesto do runtime inválido.")
         }
         for file in manifest.files {
@@ -160,7 +184,7 @@ public final class RuntimeStore {
         // dyld loads only the names written into the images, but no extra code may sit
         // next to them, and the OpenSSL provider/engine directories must stay empty.
         let listed = Set(manifest.files.map(\.path))
-        for directory in ["bin", "lib"] {
+        for directory in ["bin", "lib", "libexec"] {
             for entry in (try? FileManager.default.contentsOfDirectory(atPath: base + "/" + directory)) ?? [] {
                 let relative = directory + "/" + entry
                 if ["lib/ossl-modules", "lib/engines"].contains(relative) {
@@ -172,7 +196,9 @@ public final class RuntimeStore {
                 guard listed.contains(relative) else { throw failure(.runtimeRejected, "Arquivo não aprovado no runtime: \(relative)") }
             }
         }
-        return ActiveRuntime(root: base, executable: base + "/bin/openfortivpn", manifest: manifest)
+        let executable = "bin/" + kind.executableName
+        guard listed.contains(executable) else { throw failure(.runtimeRejected, "Manifesto sem o executável \(kind.title).") }
+        return ActiveRuntime(root: base, executable: base + "/" + executable, manifest: manifest)
     }
 
     static func validID(_ id: String) -> Bool { id.range(of: #"^[0-9a-f]{24}$"#, options: .regularExpression) != nil }
@@ -183,7 +209,8 @@ public final class RuntimeStore {
     public func install(_ inventory: Inventory, approvedBy uid: uid_t) throws -> RuntimeSummary {
         try prepareDirectories()
         var state = try loadState()
-        if let active = try? loadActive(), active.manifest.inventoryDigest == inventory.digest {
+        let kind = inventory.kind
+        if let active = try? loadActive(kind), active.manifest.inventoryDigest == inventory.digest {
             // Same bytes already approved: only authorize this user.
             if !state.authorizedUsers.contains(uid) { state.authorizedUsers.append(uid); try saveState(state) }
             return active.summary
@@ -193,7 +220,8 @@ public final class RuntimeStore {
         SecureFile.removeTree(staging)
         do {
             for directory in [staging, staging + "/bin", staging + "/lib", staging + "/lib/ossl-modules",
-                              staging + "/lib/engines", staging + "/etc", staging + "/licenses"] {
+                              staging + "/lib/engines", staging + "/etc", staging + "/licenses"]
+                + (inventory.scripts.isEmpty ? [] : [staging + "/libexec"]) {
                 try SecureFile.makeDirectory(directory, mode: 0o755)
             }
             var leafByPath: [String: String] = [:]
@@ -209,7 +237,7 @@ public final class RuntimeStore {
                 try patched.rewrite(rpaths, commands: [.rpath])
                 let relative: String
                 if image.role == .executable {
-                    relative = "bin/openfortivpn"
+                    relative = "bin/" + kind.executableName
                 } else {
                     relative = "lib/" + leafByPath[image.resolvedPath]!
                     if let name = patched.installName { try patched.rewrite([name: "@executable_path/../" + relative], commands: [.idDylib]) }
@@ -228,39 +256,49 @@ public final class RuntimeStore {
                 let (final, _) = try SecureFile.read(path, limit: RuntimeInspector.maximumImageSize)
                 files.append(ManagedFile(path: relative, sha256: Digest.sha256(final), mode: mode))
             }
+            for script in inventory.scripts {
+                // Same bytes as inspected (part of the digest); root-owned and read-only.
+                try SecureFile.create(staging + "/" + script.relativePath, data: script.data, mode: 0o555)
+                files.append(ManagedFile(path: script.relativePath, sha256: script.sha256, mode: 0o555))
+            }
             let config = Data("# OpenFortiDesk: configuração OpenSSL intencionalmente vazia (sem módulos, engines ou includes).\n".utf8)
             try SecureFile.create(staging + "/etc/openssl.cnf", data: config, mode: 0o444)
             files.append(ManagedFile(path: "etc/openssl.cnf", sha256: Digest.sha256(config), mode: 0o444))
             let notes = copyLicenses(inventory.licenseSources, into: staging + "/licenses")
             // Probe the staged copy exactly as it will run, without root when possible.
             let environment = RuntimeEnvironment.list(RuntimeEnvironment.variables(root: staging))
-            let executable = staging + "/bin/openfortivpn"
+            let executable = staging + "/bin/" + kind.executableName
             let help = try Probe.run(executable, ["--help"], environment: environment, identity: probeIdentity)
-            guard RuntimeCapabilities.looksLikeOpenFortiVPN(help.text) else {
-                throw failure(.runtimeRejected, "A cópia gerenciada não apresentou as opções esperadas do openfortivpn (código \(help.status)).")
+            let recognized = kind == .openvpn ? RuntimeCapabilities.looksLikeOpenVPN(help.text) : RuntimeCapabilities.looksLikeOpenFortiVPN(help.text)
+            guard recognized else {
+                let expected = kind == .openvpn ? "do OpenVPN 2.7 ou superior (--dns-updown)" : "do openfortivpn"
+                throw failure(.runtimeRejected, "A cópia gerenciada não apresentou as opções esperadas \(expected) (código \(help.status)).")
             }
             let versionOutput = try Probe.run(executable, ["--version"], environment: environment, identity: probeIdentity)
-            let firstLine = versionOutput.text.split(separator: "\n").first.map(String.init)?.trimmingCharacters(in: .whitespaces) ?? ""
+            var firstLine = versionOutput.text.split(separator: "\n").first.map(String.init)?.trimmingCharacters(in: .whitespaces) ?? ""
+            // "OpenVPN 2.7.8 aarch64-apple-darwin… [SSL (OpenSSL)] …"
+            if kind == .openvpn, firstLine.hasPrefix("OpenVPN ") {
+                firstLine = firstLine.split(separator: " ").dropFirst().first.map(String.init) ?? ""
+            }
             let version = firstLine.range(of: #"^[0-9][0-9A-Za-z.+_-]{0,31}$"#, options: .regularExpression) != nil ? firstLine : "desconhecida"
             let manifest = RuntimeManifest(id: id, approvedAt: Date(), approvedByUID: uid, version: version,
                                            capabilities: RuntimeCapabilities(help: help.text),
                                            inventoryDigest: inventory.digest, sourcePath: inventory.executable.resolvedPath,
                                            sourceSHA256: inventory.executable.sha256, files: files,
                                            sources: inventory.report.items, systemLibraries: inventory.systemLibraries,
-                                           packageVersion: inventory.packageVersion, notes: notes)
+                                           packageVersion: inventory.packageVersion, notes: notes, kind: kind)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             encoder.dateEncodingStrategy = .secondsSince1970
             try SecureFile.create(staging + "/manifest.json", data: try encoder.encode(manifest), mode: 0o444)
             let final = runtimes + "/" + id
             guard rename(staging, final) == 0 else { throw failure(.internalError, "Não foi possível ativar o runtime.") }
-            // The previous runtime stays as rollback until the next approval.
-            if state.activeRuntime != id { state.previousRuntime = state.activeRuntime }
-            state.activeRuntime = id
+            // The previous runtime stays as rollback until the next approval of the same kind.
+            state.activate(id, kind: kind)
             if !state.authorizedUsers.contains(uid) { state.authorizedUsers.append(uid) }
             try saveState(state)
-            prune(keeping: [state.activeRuntime, state.previousRuntime].compactMap { $0 })
-            return try loadActive().summary
+            prune(keeping: state.kept)
+            return try loadActive(kind).summary
         } catch {
             SecureFile.removeTree(staging)
             throw error

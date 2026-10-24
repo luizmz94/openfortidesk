@@ -59,6 +59,19 @@ enum Maintenance {
     /// the app and its supervisor in OpenFortiDesk.app or VPNGUI.app, and the
     /// supervisor copy and managed openfortivpn in the helper's state directory.
     static func runningProductProcesses(excluding own: pid_t = getpid()) -> [(pid: pid_t, path: String)] {
+        runningProcesses(excluding: own, matching: isProductExecutable)
+    }
+
+    /// Root-side processes of the product: the helper, any supervisor and the managed
+    /// clients (openfortivpn/openvpn copies in the helper's state directory).
+    static func runningPrivilegedProcesses() -> [(pid: pid_t, path: String)] {
+        runningProcesses(excluding: getpid()) { path in
+            path.hasPrefix(HelperConstants.stateDirectory + "/")
+                || ["VPNHelper", "VPNSupervisor"].contains { path.hasSuffix(".app/Contents/MacOS/" + $0) }
+        }
+    }
+
+    static func runningProcesses(excluding own: pid_t, matching: (String) -> Bool) -> [(pid: pid_t, path: String)] {
         let capacity = proc_listallpids(nil, 0)
         guard capacity > 0 else { return [] }
         var pids = [pid_t](repeating: 0, count: Int(capacity) + 64)
@@ -69,7 +82,7 @@ enum Maintenance {
             // Unreadable entries are exiting processes or kernel tasks.
             guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { continue }
             let path = String(cString: buffer)
-            if isProductExecutable(path) { found.append((pid, path)) }
+            if matching(path) { found.append((pid, path)) }
         }
         return found
     }

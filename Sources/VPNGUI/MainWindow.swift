@@ -8,6 +8,7 @@ struct MainView: View {
     @ObservedObject private var updates: UpdateChecker
     @State private var selected: UUID?
     @State private var editing: Connection?
+    @State private var pendingImport: OpenVPNImport?
     @State private var deleting: Connection?
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -26,8 +27,14 @@ struct MainView: View {
                 .navigationTitle("Conexões")
                 .toolbar {
                     ToolbarItem {
-                        Button { editing = Connection() } label: { Label("Nova conexão", systemImage: "plus") }
-                            .help("Nova conexão (⌘N)")
+                        Button { importOpenVPN() } label: { Label("Importar perfil OpenVPN", systemImage: "square.and.arrow.down") }
+                            .help("Importar perfil OpenVPN: .ovpn, .conf ou pasta .visc (⌘I)")
+                            .keyboardShortcut("i")
+                            .disabled(!model.ready)
+                    }
+                    ToolbarItem {
+                        Button { editing = Connection() } label: { Label("Nova conexão Fortinet", systemImage: "plus") }
+                            .help("Nova conexão Fortinet SSL VPN (⌘N)")
                             .keyboardShortcut("n")
                             .disabled(!model.ready)
                     }
@@ -56,8 +63,8 @@ struct MainView: View {
             // Back from System Settings: read the real status again (approval or revocation).
             if !model.service.busy { model.service.refresh() }
         }
-        .sheet(item: $editing) { connection in
-            ConnectionEditor(model: model, connection: connection) { selected = connection.id }
+        .sheet(item: $editing, onDismiss: { pendingImport = nil }) { connection in
+            ConnectionEditor(model: model, connection: connection, pendingImport: pendingImport) { selected = connection.id }
         }
         .alert("Erro", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK") { model.error = nil }
@@ -72,7 +79,11 @@ struct MainView: View {
                 }
                 deleting = nil
             }
-        } message: { Text("O cadastro, a senha salva e a sessão SAML guardada serão removidos.") }
+        } message: {
+            Text(deleting?.isOpenVPN == true
+                 ? "O cadastro, a senha salva e a cópia privada do perfil OpenVPN serão removidos. O arquivo original não é alterado."
+                 : "O cadastro, a senha salva e a sessão SAML guardada serão removidos.")
+        }
         .onReceive(menuBar.$pendingSelection) { id in
             // Selection requested by the menu bar (review access or certificate).
             guard let id else { return }
@@ -81,6 +92,17 @@ struct MainView: View {
                 menuBar.pendingSelection = nil
             }
         }
+    }
+
+    /// Reads the chosen profile; the editor shows what was found and saves only on Adicionar.
+    private func importOpenVPN() {
+        guard let url = OpenVPNImportPanel.choose() else { return }
+        do {
+            let imported = try OpenVPNImporter.load(url)
+            pendingImport = imported
+            editing = Connection(name: imported.name, server: "", port: imported.profile.remotes.first?.port ?? 1194,
+                                 username: imported.username, kind: .openvpn, openVPN: imported.summary)
+        } catch { model.error = error.localizedDescription }
     }
 
     // MARK: Sidebar
@@ -143,10 +165,14 @@ struct MainView: View {
                            tone: .warning)
         } else if model.data.connections.isEmpty {
             EmptyStateView(symbol: "network.badge.shield.half.filled", title: "Nenhuma conexão cadastrada",
-                           message: "Cadastre o gateway da VPN para conectar por aqui ou pela barra de menus.") {
-                Button { editing = Connection() } label: { Label("Nova conexão", systemImage: "plus") }
-                    .adaptiveButtonStyle(prominent: true)
-                    .controlSize(.large)
+                           message: "Cadastre um gateway Fortinet ou importe um perfil OpenVPN para conectar por aqui ou pela barra de menus.") {
+                HStack(spacing: 10) {
+                    Button { editing = Connection() } label: { Label("Nova conexão Fortinet", systemImage: "plus") }
+                        .adaptiveButtonStyle(prominent: true)
+                    Button { importOpenVPN() } label: { Label("Importar perfil OpenVPN…", systemImage: "square.and.arrow.down") }
+                        .adaptiveButtonStyle()
+                }
+                .controlSize(.large)
             }
         } else {
             EmptyStateView(symbol: "sidebar.left", title: "Selecione uma conexão",
@@ -185,7 +211,7 @@ struct ConnectionRow: View {
                 Text(connection.name).font(.body.weight(.medium)).lineLimit(1).truncationMode(.tail)
                 Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
             }
-            .help("\(connection.name) — \(connection.server):\(String(connection.port))")
+            .help("\(connection.name) — \(connection.kind.title) · \(connection.endpoint)")
             Spacer(minLength: 4)
             trailing
         }
@@ -201,8 +227,8 @@ struct ConnectionRow: View {
     private var subtitle: String {
         if session.state.active && session.state != .connected { return session.state.rawValue }
         if session.authenticationRejected { return "Autenticação recusada" }
-        if session.state == .failed { return "Falha · \(connection.server)" }
-        return showsServer ? "\(connection.server):\(String(connection.port))" : session.state.rawValue
+        if session.state == .failed { return "Falha · \(connection.endpoint)" }
+        return showsServer ? connection.endpoint : session.state.rawValue
     }
 
     @ViewBuilder private var trailing: some View {
@@ -246,6 +272,7 @@ struct ConnectionDetail: View {
     let delete: () -> Void
     let manageService: () -> Void
     @State private var certificateToTrust: String?
+    @State private var confirmingDigestFix: OpenVPNCompatibility.DigestFix?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(connection: Connection, session: Session, model: AppModel, edit: @escaping () -> Void,
@@ -282,6 +309,18 @@ struct ConnectionDetail: View {
                 do { try model.trustCertificate(connection, digest: digest.value) }
                 catch { model.error = error.localizedDescription }
             }
+        }
+        .confirmationDialog(confirmingDigestFix.map { "Trocar auth \($0.from) por \($0.to)?" } ?? "",
+                            isPresented: Binding(get: { confirmingDigestFix != nil }, set: { if !$0 { confirmingDigestFix = nil } })) {
+            Button("Corrigir e reconectar") {
+                if let fix = confirmingDigestFix {
+                    do { try model.applyDigestFix(connection, fix) } catch { model.error = error.localizedDescription }
+                }
+                confirmingDigestFix = nil
+            }
+            Button("Cancelar", role: .cancel) { confirmingDigestFix = nil }
+        } message: {
+            Text("auth define o HMAC dos pacotes e precisa coincidir com o servidor. \(confirmingDigestFix?.from ?? "") é um nome de assinatura que o OpenVPN 2.7 não aceita nessa diretiva; \(confirmingDigestFix?.to ?? "") é o equivalente usual. Só a cópia do perfil no app muda.")
         }
     }
 
@@ -343,6 +382,14 @@ struct ConnectionDetail: View {
     }
 
     @ViewBuilder private var notices: some View {
+        if !session.state.active, let fix = session.digestFix {
+            InlineNotice(tone: .warning, symbol: "wrench.and.screwdriver",
+                         title: "O OpenVPN recusou auth \(fix.from)",
+                         message: "Nada foi alterado. O app pode trocar para auth \(fix.to) na cópia do perfil, se o servidor usar esse algoritmo.") {
+                Button("Corrigir perfil…") { confirmingDigestFix = fix }
+            }
+            .transition(.opacity)
+        }
         if !session.state.active, let digest = session.suggestedCertificate {
             InlineNotice(tone: .warning, symbol: "lock.trianglebadge.exclamationmark",
                          title: "O certificado do servidor precisa ser conferido",
@@ -371,7 +418,34 @@ struct ConnectionDetail: View {
         }
     }
 
-    private var facts: some View {
+    @ViewBuilder private var facts: some View {
+        if connection.isOpenVPN { openVPNFacts } else { fortinetFacts }
+    }
+
+    private var openVPNFacts: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 14, verticalSpacing: 7) {
+                fact("Protocolo", "OpenVPN")
+                fact("Servidores", (connection.openVPN?.remotes ?? []).map(\.display).joined(separator: ", "))
+                fact("Usuário", connection.username.isEmpty ? "—" : connection.username)
+                fact("Autenticação", connection.usesPassword ? "Certificado + usuário e senha" : "Certificado")
+                if let source = connection.openVPN?.source, !source.isEmpty { fact("Importado de", source) }
+            }
+            .font(.callout)
+            if let warnings = connection.openVPN?.warnings, !warnings.isEmpty {
+                DisclosureGroup("Avisos da importação (\(warnings.count))") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(warnings, id: \.self) { Text("• " + $0).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 4)
+                }
+                .font(.callout)
+            }
+        }
+    }
+
+    private var fortinetFacts: some View {
         Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 14, verticalSpacing: 7) {
             fact("Servidor", "\(connection.server):\(String(connection.port))")
             fact("Usuário", connection.username.isEmpty ? "—" : connection.username)

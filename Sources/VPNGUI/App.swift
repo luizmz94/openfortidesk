@@ -16,6 +16,8 @@ final class AppModel: ObservableObject {
     /// the update check it triggers never delays or changes the connection.
     var onUserConnect: (() -> Void)?
     private var store: JSONStore?
+    /// Imported OpenVPN profiles, next to connections.json.
+    private(set) var profiles: OpenVPNProfileStore?
     init(store suppliedStore: JSONStore? = nil, passwords: PasswordStore = PasswordStore(),
          cookies: SAMLCookieStore = SAMLCookieStore(), service: ServiceController? = nil) {
         self.passwords = passwords
@@ -27,6 +29,7 @@ final class AppModel: ObservableObject {
         do {
             let store = try suppliedStore ?? JSONStore()
             self.store = store
+            profiles = OpenVPNProfileStore(store: store)
             data = try store.load()
             for connection in data.connections { _ = manager.session(connection.id) }
             ready = true
@@ -36,14 +39,28 @@ final class AppModel: ObservableObject {
             self.connect(connection, retrying: true)
         }
     }
-    func save(_ connection: Connection, password: String) throws {
+    /// `openVPNProfile` is the normalized profile of a new import (or a replacement);
+    /// nil keeps the profile already saved for this connection.
+    func save(_ connection: Connection, password: String, openVPNProfile: String? = nil) throws {
         guard ready, let store else { throw AppFailure("Os dados não foram carregados; o arquivo foi preservado.") }
         guard manager.sessions[connection.id]?.state.active != true else { throw AppFailure("Desconecte antes de editar.") }
         let c = try connection.validated()
-        if c.authentication == .password {
+        if c.usesPassword {
             guard !password.isEmpty else { throw AppFailure("Informe a senha da VPN.") }
-            try Connection.checkConfigValue(password, label: "Senha")
+            if c.isOpenVPN {
+                do { try OpenVPNRules.checkCredential(password, label: "Senha") }
+                catch let violation as RuleViolation { throw AppFailure(violation.message) }
+            } else { try Connection.checkConfigValue(password, label: "Senha") }
         }
+        if c.isOpenVPN {
+            guard let profiles else { throw AppFailure("Pasta de perfis indisponível.") }
+            if let openVPNProfile {
+                // The helper applies exactly this check again before root reads it.
+                do { _ = try OpenVPNProfile.validated(openVPNProfile) }
+                catch let violation as RuleViolation { throw AppFailure(violation.message) }
+            } else { _ = try profiles.read(c.id) }
+        }
+        let previousProfile = c.isOpenVPN && openVPNProfile != nil ? try? profiles?.read(c.id) : nil
         let previous = try passwords.read(c.id)
         // Any change to gateway, port, user, authentication or certificate drops the saved
         // SAML session. Renaming keeps it; the identity check on read is a second barrier.
@@ -55,16 +72,21 @@ final class AppModel: ObservableObject {
         if let index = updated.connections.firstIndex(where: { $0.id == c.id }) { updated.connections[index] = c }
         else { updated.connections.append(c) }
         do {
-            if c.authentication == .password { try passwords.write(password, id: c.id) }
+            if let openVPNProfile { try profiles?.write(openVPNProfile, id: c.id) }
+            if c.usesPassword { try passwords.write(password, id: c.id) }
             else { try passwords.delete(c.id) }
             try store.save(updated)
         } catch {
             if let previous { try? passwords.write(previous, id: c.id) }
             else { try? passwords.delete(c.id) }
+            if openVPNProfile != nil {
+                if let previousProfile { try? profiles?.write(previousProfile, id: c.id) } else { try? profiles?.delete(c.id) }
+            }
             throw error
         }
         data = updated
         manager.session(c.id).authenticationRejected = false
+        manager.session(c.id).digestFix = nil
     }
     func delete(_ connection: Connection) throws {
         guard ready, let store else { throw AppFailure("Os dados não foram carregados.") }
@@ -80,6 +102,7 @@ final class AppModel: ObservableObject {
             throw error
         }
         try? cookies.delete(connection.id)
+        try? profiles?.delete(connection.id)
         data = updated
         manager.sessions.removeValue(forKey: connection.id)
     }
@@ -97,20 +120,39 @@ final class AppModel: ObservableObject {
         session.suggestedCertificate = nil
         connect(updated.connections[index])
     }
+    /// Rewrites only `auth RSA-SHAx` → `auth SHAx` in the app's copy of the profile, after the
+    /// user confirmed it in the interface, then connects again. The original file is untouched.
+    func applyDigestFix(_ connection: Connection, _ fix: OpenVPNCompatibility.DigestFix) throws {
+        guard connection.isOpenVPN, let profiles, !manager.session(connection.id).state.active else {
+            throw AppFailure("Desconecte antes de corrigir o perfil.")
+        }
+        let profile: OpenVPNProfile
+        do { profile = try OpenVPNProfile.validated(try profiles.read(connection.id)) }
+        catch let violation as RuleViolation { throw AppFailure(violation.message) }
+        guard OpenVPNCompatibility.digestFix(for: profile) == fix else { throw AppFailure("A correção sugerida não se aplica mais a este perfil.") }
+        try profiles.write(OpenVPNCompatibility.apply(fix, to: profile).text, id: connection.id)
+        manager.session(connection.id).digestFix = nil
+        connect(connection)
+    }
     func connect(_ connection: Connection, retrying: Bool = false) {
         if !retrying { onUserConnect?() }
         do {
             guard !manager.session(connection.id).authenticationRejected else {
                 throw AppFailure("A última autenticação foi recusada. Edite a conexão e confirme as credenciais antes de tentar novamente, para evitar bloquear o usuário.")
             }
-            let password = connection.authentication == .password ? try passwords.read(connection.id) : nil
-            if connection.authentication == .password && (password?.isEmpty ?? true) {
+            let password = connection.usesPassword ? try passwords.read(connection.id) : nil
+            if connection.usesPassword && (password?.isEmpty ?? true) {
                 throw AppFailure("Senha não encontrada no Keychain. Edite a conexão e salve a senha novamente.")
+            }
+            var profile: String?
+            if connection.isOpenVPN {
+                guard let profiles else { throw AppFailure("Pasta de perfis indisponível.") }
+                profile = try profiles.read(connection.id)
             }
             // Fail locally instead of looping on a service that cannot run the session.
             if service.blockNewSessions { throw AppFailure("O serviço está sendo removido ou atualizado; novas conexões aguardam.") }
-            if manager.harness == nil, let reason = service.unavailableReason { throw AppFailure(reason) }
-            manager.connect(connection, password: password, retrying: retrying)
+            if manager.harness == nil, let reason = service.unavailableReason(for: connection.kind.runtime) { throw AppFailure(reason) }
+            manager.connect(connection, password: password, retrying: retrying, openVPNProfile: profile)
         } catch {
             if retrying { manager.retryFailed(connection.id, message: error.localizedDescription) }
             self.error = error.localizedDescription
@@ -159,7 +201,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true) // The window may be hidden; keep the alert visible.
         let alert = NSAlert()
         alert.messageText = "Desconectar e sair?"
-        alert.informativeText = "Há conexões ativas, em andamento ou com reconexão agendada. O app aguardará o encerramento e a limpeza do openfortivpn antes de sair."
+        alert.informativeText = "Há conexões ativas, em andamento ou com reconexão agendada. O app aguardará o encerramento e a limpeza das VPNs antes de sair."
         alert.addButton(withTitle: "Desconectar e sair")
         alert.addButton(withTitle: "Cancelar")
         return alert.runModal() == .alertFirstButtonReturn

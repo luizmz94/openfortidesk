@@ -11,6 +11,13 @@ exception; consult upstream LICENSE and source headers for its exact scope). Nei
 nor Homebrew libraries are included in release archives. The locally approved
 runtime is copied from the user's installation by the privileged helper.
 
+**OpenVPN** is an external dependency, maintained by OpenVPN Inc. and its
+contributors: https://github.com/OpenVPN/openvpn (GPL-2.0; its `dns-updown`
+script is BSD-2-Clause). It is not included in release archives either; when the
+user approves it, the helper copies the local installation, its libraries, its
+`dns-updown` script and license files into the protected runtime. OpenVPN is a
+registered trademark of OpenVPN Inc.; this project is independent of it.
+
 **Brand assets:** the original V/node symbol and icon were supplied by the project
 owner as the VPN GUI brand pack. SVG content credentials identify Claude as a
 creating/modifying tool, not an exclusive human author. They are retained as

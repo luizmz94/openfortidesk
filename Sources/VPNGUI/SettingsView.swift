@@ -399,7 +399,7 @@ struct ServiceSettings: View {
     /// Checked against SECURITY.md and VPNHelperCore: XPC peers must carry this app's
     /// identifier and Team ID, the helper only starts the approved, integrity-checked
     /// runtime copy, and passwords reach it per connection through file descriptors.
-    static let explanation = "O openfortivpn precisa de privilégios de administrador para criar a interface da VPN e ajustar rotas e DNS. Em vez de pedir sua senha a cada conexão ou rodar o app como root, o OpenFortiDesk registra um pequeno serviço do sistema que só aceita pedidos deste app assinado, só executa a cópia do openfortivpn que você aprovou e não guarda senhas: elas ficam no seu Keychain e são entregues só ao conectar. Você pode removê-lo aqui a qualquer momento."
+    static let explanation = "O openfortivpn e o OpenVPN precisam de privilégios de administrador para criar a interface da VPN e ajustar rotas e DNS. Em vez de pedir sua senha a cada conexão ou rodar o app como root, o OpenFortiDesk registra um pequeno serviço do sistema que só aceita pedidos deste app assinado, só executa as cópias do openfortivpn e do OpenVPN que você aprovou e não guarda senhas: elas ficam no seu Keychain e são entregues só ao conectar. Você pode removê-lo aqui a qualquer momento."
 
     var body: some View {
         SettingsSection(title: "Por que este serviço existe") {
@@ -427,7 +427,7 @@ struct AboutSettings: View {
                 Text("OpenFortiDesk").font(.title2.weight(.semibold))
                 Text("Versão \(HelperConstants.releaseVersion) (build \(HelperConstants.build))")
                     .font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
-                Text("Interface nativa de macOS para o openfortivpn.").font(.callout).foregroundStyle(.secondary)
+                Text("Interface nativa de macOS para o openfortivpn e o OpenVPN.").font(.callout).foregroundStyle(.secondary)
             }
         }
         .accessibilityElement(children: .combine)
@@ -442,9 +442,12 @@ struct AboutSettings: View {
             link("list.bullet.rectangle", .orange, "Avisos de terceiros", "THIRD_PARTY_NOTICES.md",
                  URL(string: "https://github.com/\(UpdateFeed.repository)/blob/main/THIRD_PARTY_NOTICES.md"))
         }
-        SettingsSection(title: "Dependência") {
+        SettingsSection(title: "Dependências") {
             SettingsRow(symbol: "terminal", color: .gray, title: "openfortivpn",
-                        subtitle: "Dependência externa, instalada pelo Homebrew e mantida pelo próprio projeto. Não é distribuída com o OpenFortiDesk.")
+                        subtitle: "Para Fortinet SSL VPN. Dependência externa, instalada pelo Homebrew e mantida pelo próprio projeto. Não é distribuída com o OpenFortiDesk.")
+            SettingsDivider()
+            SettingsRow(symbol: "terminal", color: .gray, title: "OpenVPN 2.7+",
+                        subtitle: "Para perfis OpenVPN (brew install openvpn). Dependência externa, não distribuída com o OpenFortiDesk.")
         }
     }
 

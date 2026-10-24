@@ -15,13 +15,26 @@ struct InspectedImage {
     var resolvedDependencies: [String: String] = [:]
 }
 
+/// A shell script shipped with the client (OpenVPN's dns-updown), frozen like the images.
+/// Its interpreter must be a SIP-protected system shell.
+struct InspectedScript {
+    let relativePath: String          // inside the managed copy
+    let resolvedPath: String
+    let data: Data
+    let sha256: String
+    let ownerUID: uid_t
+    let mutableLocation: Bool
+}
+
 public struct Inventory {
+    public let kind: RuntimeKind
     public let candidatePath: String
     let images: [InspectedImage]          // [0] is the executable
     let systemLibraries: [String]
     let packageVersion: String?
     let licenseSources: [String]          // keg roots whose license files are preserved
     let warnings: [String]
+    let scripts: [InspectedScript]
     public let digest: String
 
     var executable: InspectedImage { images[0] }
@@ -29,8 +42,10 @@ public struct Inventory {
         RuntimeInspection(candidatePath: candidatePath, resolvedPath: executable.resolvedPath, digest: digest,
                           items: images.map { InventoryItem(role: $0.role, sourcePath: $0.resolvedPath, sha256: $0.sha256,
                                                             size: $0.original.count, ownerUID: $0.ownerUID,
-                                                            mutableLocation: $0.mutableLocation) },
-                          systemLibraries: systemLibraries, packageVersion: packageVersion, warnings: warnings)
+                                                            mutableLocation: $0.mutableLocation) }
+                            + scripts.map { InventoryItem(role: .script, sourcePath: $0.resolvedPath, sha256: $0.sha256,
+                                                          size: $0.data.count, ownerUID: $0.ownerUID, mutableLocation: $0.mutableLocation) },
+                          systemLibraries: systemLibraries, packageVersion: packageVersion, warnings: warnings, kind: kind)
     }
 }
 
@@ -64,13 +79,14 @@ public enum RuntimeInspector {
         }
     }
 
-    public static func inspect(candidate: String, requester: uid_t) throws -> Inventory {
+    public static func inspect(candidate: String, requester: uid_t, kind: RuntimeKind = .openfortivpn) throws -> Inventory {
+        let name = kind.executableName
         guard candidate.hasPrefix("/"), candidate.utf8.count <= 1024, !candidate.contains("\0"),
-              (candidate as NSString).lastPathComponent == "openfortivpn" else {
-            throw failure(.invalidRequest, "Indique o caminho absoluto de um executável chamado openfortivpn.")
+              (candidate as NSString).lastPathComponent == name else {
+            throw failure(.invalidRequest, "Indique o caminho absoluto de um executável chamado \(name).")
         }
         let resolved = try SecureFile.realPath(candidate)
-        guard (resolved as NSString).lastPathComponent == "openfortivpn" else {
+        guard (resolved as NSString).lastPathComponent == name else {
             throw failure(.runtimeRejected, "O caminho resolve para outro arquivo: \(resolved)")
         }
         var images: [InspectedImage] = []
@@ -117,13 +133,43 @@ public enum RuntimeInspector {
             }
         }
         let package = kegVersion(resolved)
+        var scripts: [InspectedScript] = []
+        var notes: [String] = []
+        if kind == .openvpn {
+            if let script = try dnsScript(for: resolved, requester: requester) { scripts.append(script) }
+            else { notes.append("Script dns-updown do OpenVPN não encontrado junto ao executável: o túnel funcionará, mas o DNS da VPN não será configurado.") }
+        }
         let warnings = images.filter(\.mutableLocation).map {
             "\($0.resolvedPath) está em local alterável sem senha de administrador (dono uid \($0.ownerUID)). A aprovação congela exatamente estes bytes numa cópia protegida; confira a origem antes de aprovar."
-        }
-        let listing = images.map { "\($0.role.rawValue)\t\($0.resolvedPath)\t\($0.sha256)" }.sorted().joined(separator: "\n")
+        } + scripts.filter(\.mutableLocation).map {
+            "\($0.resolvedPath) (script de DNS executado como root) está em local alterável sem senha de administrador. A aprovação congela estes bytes."
+        } + notes
+        let listing = (images.map { "\($0.role.rawValue)\t\($0.resolvedPath)\t\($0.sha256)" }
+                       + scripts.map { "script\t\($0.relativePath)\t\($0.resolvedPath)\t\($0.sha256)" })
+            .sorted().joined(separator: "\n")
         let kegs = images.compactMap { kegRoot($0.resolvedPath) }
-        return Inventory(candidatePath: candidate, images: images, systemLibraries: system.sorted(), packageVersion: package,
-                         licenseSources: Array(Set(kegs)).sorted(), warnings: warnings, digest: Digest.sha256(Data(listing.utf8)))
+        return Inventory(kind: kind, candidatePath: candidate, images: images, systemLibraries: system.sorted(), packageVersion: package,
+                         licenseSources: Array(Set(kegs)).sorted(), warnings: warnings, scripts: scripts,
+                         digest: Digest.sha256(Data((kind.rawValue + "\n" + listing).utf8)))
+    }
+
+    static let maximumScriptSize = 1024 * 1024
+
+    /// OpenVPN 2.7 runs `<prefix>/libexec/openvpn/dns-updown` as root after the tunnel is up.
+    /// The compiled-in path points into the (user-writable) Homebrew prefix, so the helper
+    /// freezes this script and passes the frozen copy explicitly instead.
+    static func dnsScript(for executable: String, requester: uid_t) throws -> InspectedScript? {
+        let prefix = ((executable as NSString).deletingLastPathComponent as NSString).deletingLastPathComponent
+        let candidate = prefix + "/libexec/openvpn/dns-updown"
+        guard let path = try? SecureFile.realPath(candidate) else { return nil }
+        try checkForeignControl(path, requester: requester)
+        let (data, info) = try SecureFile.read(path, limit: maximumScriptSize)
+        let firstLine = data.prefix(64).split(separator: 10).first.map { String(decoding: $0, as: UTF8.self) } ?? ""
+        guard ["#!/bin/bash", "#!/bin/sh"].contains(firstLine.trimmingCharacters(in: .whitespaces)) else {
+            throw failure(.runtimeRejected, "O script dns-updown não usa um interpretador do sistema (/bin/bash ou /bin/sh).")
+        }
+        return InspectedScript(relativePath: "libexec/dns-updown", resolvedPath: path, data: data, sha256: Digest.sha256(data),
+                               ownerUID: info.st_uid, mutableLocation: SecureFile.mutableLocation(path))
     }
 
     static func expand(_ value: String, loader: String, executable: String) -> String {

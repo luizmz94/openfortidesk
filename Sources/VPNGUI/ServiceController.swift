@@ -29,8 +29,11 @@ final class DaemonRegistrar: ServiceRegistrar {
 protocol SessionTransport: AnyObject {
     /// nil when new sessions may start; otherwise a reason for the user.
     var unavailableReason: String? { get }
+    /// nil when sessions of this client may start (service ready and its copy approved).
+    func unavailableReason(for kind: RuntimeKind) -> String?
     var capabilities: RuntimeCapabilities? { get }
     func start(_ request: ConnectionRequest, completion: @escaping (Result<(String, LaunchPlan), HelperFailure>) -> Void)
+    func startOpenVPN(_ request: OpenVPNRequest, completion: @escaping (Result<(String, LaunchPlan), HelperFailure>) -> Void)
     func stop(_ token: String, completion: @escaping (HelperFailure?) -> Void)
 }
 
@@ -61,7 +64,7 @@ final class ServiceController: ObservableObject, SessionTransport {
             case .unresponsive: return "Serviço não responde"
             case .incompatible: return "Serviço incompatível"
             case .outdated: return "Atualização do serviço necessária"
-            case .runtimeMissing: return "openfortivpn não aprovado"
+            case .runtimeMissing: return "Nenhum cliente VPN aprovado"
             case .userNotAuthorized: return "Usuário não autorizado"
             case .ready: return "Serviço pronto"
             }
@@ -76,8 +79,8 @@ final class ServiceController: ObservableObject, SessionTransport {
             case .unresponsive(let reason): return "O serviço está habilitado, mas o handshake autenticado falhou: \(reason)"
             case .incompatible(let reason): return reason
             case .outdated(let version): return "O serviço registrado é \(version); este app é \(HelperConstants.fullVersion). Use Atualizar serviço (desconecta antes)."
-            case .runtimeMissing(let reason): return reason + " Use Aprovar openfortivpn… (requer administrador)."
-            case .userNotAuthorized: return "Um administrador precisa autorizar este usuário do macOS: use Aprovar openfortivpn…."
+            case .runtimeMissing(let reason): return reason + " Use Aprovar openfortivpn… ou Aprovar OpenVPN… (requer administrador)."
+            case .userNotAuthorized: return "Um administrador precisa autorizar este usuário do macOS: use Aprovar openfortivpn… ou Aprovar OpenVPN…."
             case .ready: return "Conectar não pede senha de administrador enquanto o serviço estiver habilitado e íntegro."
             }
         }
@@ -96,6 +99,8 @@ final class ServiceController: ObservableObject, SessionTransport {
     @Published private(set) var busy = false
     @Published var message: String?
     @Published var inspection: RuntimeInspection?
+    /// Client of the pending inspection (approve sends the matching request).
+    var inspectionKind: RuntimeKind { inspection?.kind ?? .openfortivpn }
     @Published private(set) var blockNewSessions = false
     let policy: CodeTrust.Policy
     let registrar: ServiceRegistrar?
@@ -137,8 +142,14 @@ final class ServiceController: ObservableObject, SessionTransport {
     }
     var unavailableReason: String? {
         if blockNewSessions { return "O serviço está sendo removido ou atualizado; novas conexões aguardam." }
-        if health == .ready, status?.runtime != nil { return nil }
+        if health == .ready, status?.runtime != nil || status?.openVPNRuntime != nil { return nil }
         return "\(health.title). \(health.detail)"
+    }
+    func unavailableReason(for kind: RuntimeKind) -> String? {
+        if let reason = unavailableReason { return reason }
+        guard status?.runtime(kind) == nil else { return nil }
+        let problem = status?.runtimeProblem(kind) ?? "Nenhum \(kind.title) aprovado para o serviço."
+        return "\(problem) Em Configurações › Serviço privilegiado, use Aprovar \(kind.title)… (requer administrador)."
     }
     var capabilities: RuntimeCapabilities? { status?.runtime?.capabilities }
 
@@ -149,12 +160,13 @@ final class ServiceController: ObservableObject, SessionTransport {
     }
 
     /// Homebrew changed since approval: informational, the protected copy keeps running.
-    var sourceDrift: String? {
-        guard let runtime = status?.runtime,
+    var sourceDrift: String? { sourceDrift(.openfortivpn) }
+    func sourceDrift(_ kind: RuntimeKind) -> String? {
+        guard let runtime = status?.runtime(kind),
               let data = FileManager.default.contents(atPath: runtime.sourcePath) else { return nil }
         let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         return digest == runtime.sourceSHA256 ? nil :
-            "O openfortivpn em \(runtime.sourcePath) mudou desde a aprovação. A cópia aprovada (\(runtime.version)) continua em uso; aprove novamente para atualizar."
+            "O \(kind.title) em \(runtime.sourcePath) mudou desde a aprovação. A cópia aprovada (\(runtime.version)) continua em uso; aprove novamente para atualizar."
     }
 
     // MARK: Status
@@ -189,7 +201,9 @@ final class ServiceController: ObservableObject, SessionTransport {
     func apply(_ status: HelperStatus) {
         self.status = status
         if status.helperVersion != HelperConstants.fullVersion { health = .outdated(status.helperVersion) }
-        else if status.runtime == nil { health = .runtimeMissing(status.runtimeProblem ?? "Nenhum openfortivpn aprovado.") }
+        else if status.runtime == nil && status.openVPNRuntime == nil {
+            health = .runtimeMissing(status.runtimeProblem ?? "Nenhum openfortivpn ou OpenVPN aprovado.")
+        }
         else if !status.userAuthorized { health = .userNotAuthorized }
         else { health = .ready }
     }
@@ -223,36 +237,56 @@ final class ServiceController: ObservableObject, SessionTransport {
 
     func openSettings() { registrar?.openSystemSettings() }
 
-    func inspect(candidate: String) {
+    /// One click: the helper inventories the installation, then macOS asks for the
+    /// administrator password and the helper freezes exactly the inspected bytes.
+    func approveClient(_ kind: RuntimeKind) {
+        approvingKind = kind
+        inspect(candidate: BinaryLocator.defaultPath(for: kind), kind: kind, thenApprove: true)
+    }
+    /// Client whose approval is in progress (for the busy indicator).
+    @Published private(set) var approvingKind: RuntimeKind?
+
+    func inspect(candidate: String, kind: RuntimeKind = .openfortivpn, thenApprove: Bool = false) {
         guard let client, health != .checking else { return }
         busy = true
         inspection = nil
-        client.request(.inspectRuntime(path: candidate), timeout: 60) { [weak self] result in
+        let request: HelperRequest = kind == .openvpn ? .inspectOpenVPNRuntime(path: candidate) : .inspectRuntime(path: candidate)
+        client.request(request, timeout: 60) { [weak self] result in
             guard let self else { return }
             self.busy = false
             switch result {
-            case .success(.inspection(let inspection)): self.inspection = inspection
-            case .success(.failure(let failure)), .failure(let failure): self.message = failure.message
-            case .success: self.message = "Resposta inesperada do serviço."
+            case .success(.inspection(let inspection)):
+                self.inspection = inspection
+                if thenApprove { self.approve() }
+            case .success(.failure(let failure)), .failure(let failure): self.message = failure.message; self.approvingKind = nil
+            case .success: self.message = "Resposta inesperada do serviço."; self.approvingKind = nil
             }
         }
     }
 
     /// The administrator prompt is shown by macOS in this session; nothing is automated.
     func approve() {
-        guard let client, let inspection else { return }
-        guard let authorization = AdminAuthorizationHandle() else { message = "Não foi possível preparar a autorização do macOS."; return }
+        guard let client, let inspection else { approvingKind = nil; return }
+        guard let authorization = AdminAuthorizationHandle() else {
+            message = "Não foi possível preparar a autorização do macOS."; approvingKind = nil; self.inspection = nil; return
+        }
         busy = true
-        client.request(.approveRuntime(path: inspection.candidatePath, digest: inspection.digest,
-                                       authorization: authorization.externalForm), timeout: 600) { [weak self] result in
+        let kind = inspection.kind
+        let request: HelperRequest = kind == .openvpn
+            ? .approveOpenVPNRuntime(path: inspection.candidatePath, digest: inspection.digest, authorization: authorization.externalForm)
+            : .approveRuntime(path: inspection.candidatePath, digest: inspection.digest, authorization: authorization.externalForm)
+        client.request(request, timeout: 600) { [weak self] result in
             withExtendedLifetime(authorization) {}
             guard let self else { return }
             self.busy = false
+            self.approvingKind = nil
+            if case .success(.failure) = result { self.inspection = nil }
+            if case .failure = result { self.inspection = nil }
             switch result {
             case .success(.status(let status)):
                 self.inspection = nil
                 self.apply(status)
-                self.message = "openfortivpn \(status.runtime?.version ?? "") aprovado e protegido."
+                self.message = "\(kind.title) \(status.runtime(kind)?.version ?? "") aprovado e protegido."
             case .success(.failure(let failure)), .failure(let failure): self.message = failure.message
             case .success: self.message = "Resposta inesperada do serviço."
             }
@@ -318,10 +352,17 @@ final class ServiceController: ObservableObject, SessionTransport {
             done(registrar?.status == .notRegistered || registrar?.status == .requiresApproval); return
         }
         guard let client else { done(false); return }
-        client.request(.prepareForMaintenance, timeout: 15) { result in
+        client.request(.prepareForMaintenance, timeout: 15) { [weak self] result in
             switch result {
             case .success(.done): done(true)
-            default: done(false) // Missing replies and other users' sessions fail closed.
+            case .failure(let failure) where [.transport, .timeout, .unavailable].contains(failure.code):
+                // The helper cannot be reached at all (for example launchd refuses to start it
+                // after the bundle changed). Its sessions would be visible as helper, supervisor
+                // or managed client processes; with none running, removing the registration is
+                // the way out. Any such process keeps the removal refused.
+                let running = self?.privilegedProcesses() ?? []
+                done(running.isEmpty)
+            default: done(false) // Other replies (busy, other users' sessions) fail closed.
             }
         }
     }
@@ -343,13 +384,29 @@ final class ServiceController: ObservableObject, SessionTransport {
         }
     }
 
+    /// Injectable for local checks; production lists processes through libproc.
+    var privilegedProcesses: () -> [(pid: pid_t, path: String)] = { Maintenance.runningPrivilegedProcesses() }
+
     // MARK: SessionTransport
 
     func start(_ request: ConnectionRequest, completion: @escaping (Result<(String, LaunchPlan), HelperFailure>) -> Void) {
-        guard unavailableReason == nil, let client else {
-            completion(.failure(HelperFailure(.unavailable, unavailableReason ?? "Serviço indisponível."))); return
+        guard unavailableReason(for: .openfortivpn) == nil, let client else {
+            completion(.failure(HelperFailure(.unavailable, unavailableReason(for: .openfortivpn) ?? "Serviço indisponível."))); return
         }
         client.request(.start(request), timeout: 30) { result in
+            switch result {
+            case .success(.started(let token, let plan)): completion(.success((token, plan)))
+            case .success(.failure(let failure)), .failure(let failure): completion(.failure(failure))
+            case .success: completion(.failure(HelperFailure(.invalidRequest, "Resposta inesperada do serviço.")))
+            }
+        }
+    }
+
+    func startOpenVPN(_ request: OpenVPNRequest, completion: @escaping (Result<(String, LaunchPlan), HelperFailure>) -> Void) {
+        guard unavailableReason(for: .openvpn) == nil, let client else {
+            completion(.failure(HelperFailure(.unavailable, unavailableReason(for: .openvpn) ?? "Serviço indisponível."))); return
+        }
+        client.request(.startOpenVPN(request), timeout: 30) { result in
             switch result {
             case .success(.started(let token, let plan)): completion(.success((token, plan)))
             case .success(.failure(let failure)), .failure(let failure): completion(.failure(failure))

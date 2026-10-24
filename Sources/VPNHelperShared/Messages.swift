@@ -79,6 +79,25 @@ public struct ConnectionRequest: Codable, Equatable, Sendable {
     }
 }
 
+/// OpenVPN session: a normalized profile (inline material only) plus optional credentials.
+/// The helper validates the profile with the same allowlist and renders the final config.
+public struct OpenVPNRequest: Codable, Equatable, Sendable {
+    public var connectionID: UUID
+    public var profile: String
+    public var username: String?
+    public var password: String?
+    public init(connectionID: UUID, profile: String, username: String?, password: String?) {
+        self.connectionID = connectionID; self.profile = profile; self.username = username; self.password = password
+    }
+}
+
+/// The VPN clients the helper can freeze and run. Each has its own approved copy.
+public enum RuntimeKind: String, Codable, CaseIterable, Sendable {
+    case openfortivpn, openvpn
+    public var executableName: String { rawValue }
+    public var title: String { self == .openfortivpn ? "openfortivpn" : "OpenVPN" }
+}
+
 public enum HelperRequest: Codable, Equatable, Sendable {
     case hello(HelloRequest)
     case status
@@ -90,6 +109,10 @@ public enum HelperRequest: Codable, Equatable, Sendable {
     /// Admin-authorized removal of the helper's own managed files (no active sessions).
     case removeManagedFiles(authorization: Data)
     case start(ConnectionRequest)
+    /// Same flow for the OpenVPN runtime (inventory includes its dns-updown script).
+    case inspectOpenVPNRuntime(path: String)
+    case approveOpenVPNRuntime(path: String, digest: String, authorization: Data)
+    case startOpenVPN(OpenVPNRequest)
     case stop(token: String)
     case stopAll
     /// Refuse unless every client and stale supervisor is idle; prevent new starts.
@@ -124,16 +147,23 @@ public struct HelperStatus: Codable, Equatable, Sendable {
     /// Profiles of this user whose previous supervisor (from an earlier helper process or
     /// connection) is still alive. They are never adopted; new starts wait for them to end.
     public var stoppingConnections: [UUID]
+    /// Approved OpenVPN copy, independent of the openfortivpn one.
+    public var openVPNRuntime: RuntimeSummary?
+    public var openVPNRuntimeProblem: String?
     public init(protocolVersion: Int, helperVersion: String, runtime: RuntimeSummary?, runtimeProblem: String?,
-                userAuthorized: Bool, activeSessions: Int, stoppingConnections: [UUID]) {
+                userAuthorized: Bool, activeSessions: Int, stoppingConnections: [UUID],
+                openVPNRuntime: RuntimeSummary? = nil, openVPNRuntimeProblem: String? = nil) {
         self.protocolVersion = protocolVersion; self.helperVersion = helperVersion; self.runtime = runtime
         self.runtimeProblem = runtimeProblem; self.userAuthorized = userAuthorized
         self.activeSessions = activeSessions; self.stoppingConnections = stoppingConnections
+        self.openVPNRuntime = openVPNRuntime; self.openVPNRuntimeProblem = openVPNRuntimeProblem
     }
+    public func runtime(_ kind: RuntimeKind) -> RuntimeSummary? { kind == .openvpn ? openVPNRuntime : runtime }
+    public func runtimeProblem(_ kind: RuntimeKind) -> String? { kind == .openvpn ? openVPNRuntimeProblem : runtimeProblem }
 }
 
 public struct InventoryItem: Codable, Equatable, Sendable {
-    public enum Role: String, Codable, Sendable { case executable, library }
+    public enum Role: String, Codable, Sendable { case executable, library, script }
     public var role: Role
     public var sourcePath: String
     public var sha256: String
@@ -156,10 +186,12 @@ public struct RuntimeInspection: Codable, Equatable, Sendable {
     public var systemLibraries: [String]
     public var packageVersion: String?
     public var warnings: [String]
+    public var kind: RuntimeKind
     public init(candidatePath: String, resolvedPath: String, digest: String, items: [InventoryItem],
-                systemLibraries: [String], packageVersion: String?, warnings: [String]) {
+                systemLibraries: [String], packageVersion: String?, warnings: [String], kind: RuntimeKind = .openfortivpn) {
         self.candidatePath = candidatePath; self.resolvedPath = resolvedPath; self.digest = digest; self.items = items
         self.systemLibraries = systemLibraries; self.packageVersion = packageVersion; self.warnings = warnings
+        self.kind = kind
     }
 }
 
