@@ -268,15 +268,6 @@ enum WireGuardTests {
             try require(WireGuardTools.defaultRoute("default  $(id)  UGSc  en0\ndefault 10.0.0.1%en0;x UGSc en0") == nil, "Gateway inválido aceito")
         }
 
-        test("Filtro de saída: só sessões WireGuard mantêm linhas DEBUG; as demais continuam descartando DEBUG e continuações") {
-            let output = Data("DEBUG: (utun8) 2026/10/24 peer(ZTJk…f2Tw) - Received handshake response\ncontinuação\nINFO: ok\n".utf8)
-            var wireGuard = OutputLineFilter(captureCookie: false, keepDebug: true)
-            try require(wireGuard.feed(output) == [.line("DEBUG: (utun8) 2026/10/24 peer(ZTJk…f2Tw) - Received handshake response"), .line("continuação"), .line("INFO: ok")],
-                        "Linhas do wireguard-go")
-            var other = OutputLineFilter(captureCookie: false)
-            try require(other.feed(output) == [.line("INFO: ok")], "DEBUG passou no filtro padrão")
-        }
-
         test("Supervisor: modo --wireguard executa só -f utun, sem o descritor de configuração, e recusa argumentos extras") {
             let script = root.appendingPathComponent("wg-args.sh")
             // /bin/sh itself may hold the script on fd 3; the configuration must not be there.
@@ -316,8 +307,8 @@ enum WireGuardTests {
             try require(spin(5) { lines().contains { $0.hasPrefix(WireGuardMarkers.handshake) } }, "Handshake não registrado")
             let pid = raw.received.flatMap(\.events).compactMap { event -> Int32? in if case .started(let pid) = event.kind { return pid }; return nil }.first
             let all = lines()
-            try require(all.contains("ARGS=-f utun") && all.contains { $0.hasPrefix("ENV=") && $0.hasSuffix("|verbose") }, "Argumentos/ambiente: \(all.prefix(4))")
-            try require(all.contains { $0.hasPrefix("DEBUG: (utun42)") && $0.contains("Starting wireguard-go") }, "Log verbose do wireguard-go descartado")
+            try require(all.contains("ARGS=-f utun") && all.contains { $0.hasPrefix("ENV=") && $0.hasSuffix("|error") }, "Argumentos/ambiente: \(all.prefix(4))")
+            try require(!all.contains { $0.hasPrefix("DEBUG:") }, "Linha DEBUG chegou ao log")
             let set = host.uapiRequests.first { $0.request.hasPrefix("set=1") }
             try require(set?.interface == "utun42" && set?.pid == pid && set?.request.contains("private_key=77076d0a") == true
                         && set?.request.contains("endpoint=203.0.113.10:51820") == true, "UAPI: \(String(describing: set))")
@@ -573,7 +564,7 @@ extension HelperFixture {
     echo "ENV=$WG_TUN_NAME_FILE|$LOG_LEVEL"
     printf 'utun42\\n' > "$WG_TUN_NAME_FILE"
     echo "DEBUG: (utun42) 2026/10/24 12:00:00 Starting wireguard-go version 0.0.fixture"
-    trap 'echo "DEBUG: (utun42) 2026/10/24 12:00:09 Shutting down"; exit 0' TERM
+    trap 'echo "INFO: (utun42) 2026/10/24 12:00:09 Shutting down"; exit 0' TERM
     while :; do /bin/sleep 1 & wait $!; done
     """
 

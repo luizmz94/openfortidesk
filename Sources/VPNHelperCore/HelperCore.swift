@@ -271,9 +271,10 @@ public final class HelperCore {
         let tunnel = WireGuardTunnel(token: token, profile: profile, host: configuration.wireGuardHost, nameFile: nameFile,
                                      recordPath: store.wireGuardRecords + "/\(token).json")
         tunnel.interval = configuration.wireGuardInterval
-        // wireguard-go reads nothing else from the environment; LOG_LEVEL=verbose shows handshakes.
+        // wireguard-go reads nothing else from the environment. Errors only: its verbose log
+        // is thread bookkeeping; the handshake is read from UAPI by the tunnel monitor.
         let environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C",
-                           "WG_TUN_NAME_FILE": nameFile, "LOG_LEVEL": "verbose"]
+                           "WG_TUN_NAME_FILE": nameFile, "LOG_LEVEL": "error"]
         return launch(connectionID: request.connectionID, client: client, runtime: runtime, content: Data(), cookie: nil,
                       supervisorArguments: ["--wireguard", runtime.executable], plan: LaunchPlan(clientArguments: [], mode: .none),
                       secrets: [], token: token, environment: environment) { [queue] runner in
@@ -350,7 +351,7 @@ public final class HelperCore {
         }
         sessions[token] = runner
         registry.add(token: token, uid: client.uid, connectionID: connectionID, pid: pid)
-        runner.startReading(captureCookie: plan.mode == .capture, secrets: secrets, keepDebug: runtime.kind == .wireguard)
+        runner.startReading(captureCookie: plan.mode == .capture, secrets: secrets)
         return .started(token: token, plan: plan)
     }
 

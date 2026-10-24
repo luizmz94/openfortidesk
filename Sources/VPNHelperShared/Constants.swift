@@ -11,7 +11,7 @@ public enum HelperConstants {
     /// Single source of the product version; scripts/build.sh writes it into Info.plist.
     public static let version = "0.5.0"
     public static let releaseVersion = "0.5.0-rc.1"
-    public static let build = "19"
+    public static let build = "20"
     public static var fullVersion: String { "\(version) (\(build))" }
     /// Bumped whenever a request, response or event changes shape or meaning.
     public static let protocolVersion = 4

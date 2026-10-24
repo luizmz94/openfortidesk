@@ -23,7 +23,8 @@
   changes move the endpoint routes; network changes re-apply the DNS.
 - The connection is marked connected once the tunnel is configured; the first
   handshake is logged, and a warning appears if none happens within 30 seconds.
-  wireguard-go's verbose log (no key material) is kept for WireGuard sessions only.
+  wireguard-go runs with `LOG_LEVEL=error`: the log shows its errors and the service's
+  own steps, not its debug output.
 - Helper protocol 4: update the service after upgrading.
 
 ## 0.4.0-rc.1 — unreleased

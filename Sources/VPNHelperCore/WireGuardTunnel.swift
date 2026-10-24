@@ -256,7 +256,7 @@ final class WireGuardTunnel: SessionObserver {
         }
     }
 
-    /// wireguard-go's log names the interface: "DEBUG: (utun8) 2026/10/24 … Starting wireguard-go".
+    /// wireguard-go's log names the interface: "ERROR: (utun8) 2026/10/24 …".
     func clientOutput(_ line: String) {
         guard let range = line.range(of: #"^(DEBUG|INFO|ERROR): \(utun[0-9]{1,5}\) "#, options: .regularExpression) else { return }
         let text = line[range]

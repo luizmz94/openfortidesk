@@ -128,9 +128,9 @@ final class SessionRunner {
 
     /// Starts the ordered reader. Runs on its own thread so a slow client never blocks
     /// the supervisor: output is always drained and bounded by EventPump.
-    func startReading(captureCookie: Bool, secrets: [String], keepDebug: Bool = false) {
+    func startReading(captureCookie: Bool, secrets: [String]) {
         let thread = Thread { [self] in
-            var filter = OutputLineFilter(captureCookie: captureCookie, secrets: secrets, keepDebug: keepDebug)
+            var filter = OutputLineFilter(captureCookie: captureCookie, secrets: secrets)
             var sawPID = false
             var buffer = [UInt8](repeating: 0, count: 8192)
             func forward(_ events: [OutputLineFilter.Event]) {
