@@ -227,8 +227,7 @@ struct VPNGUIApp: App {
         }
         .defaultSize(width: 760, height: 540)
         // Not inserted in the local checks runner, so it still quits on its own.
-        MenuBarExtra(isInserted: Binding(get: { !MenuBarCoordinator.isLocalChecks && preferences.showMenuBarIcon },
-                                         set: { if !MenuBarCoordinator.isLocalChecks { preferences.showMenuBarIcon = $0 } })) {
+        MenuBarExtra(isInserted: preferences.menuBarIconBinding(enabled: !MenuBarCoordinator.isLocalChecks)) {
             MenuBarView(menuBar: menuBar)
         } label: {
             MenuBarLabel(menuBar: menuBar)

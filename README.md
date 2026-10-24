@@ -6,7 +6,7 @@ of, and not affiliated with, Fortinet or the openfortivpn project. No VPN execut
 or Homebrew libraries are bundled in the distributed app.
 
 **Status:** release candidate
-[`v0.3.0-rc.4`](https://github.com/luizmz94/openfortidesk/releases/tag/v0.3.0-rc.4),
+[`v0.3.0-rc.5`](https://github.com/luizmz94/openfortidesk/releases/tag/v0.3.0-rc.5),
 signed with Developer ID and notarized. Full Homebrew upgrade/uninstall lifecycle
 validation is still pending, so it is not yet declared stable.
 

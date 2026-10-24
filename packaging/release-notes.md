@@ -1,6 +1,10 @@
 OpenFortiDesk release candidate: macOS 13+, Apple Silicon arm64 only.
 
-Changes in rc.4:
+Changes in rc.5: fixes a crash at launch in rc.4 (a loop between the menu bar icon
+setting and SwiftUI's scene updates). rc.4 cannot be opened, so update with brew
+directly: `brew upgrade --cask luizmz94/openfortidesk/openfortidesk`.
+
+Changes in rc.4 (included):
 - Configurações window (⌘,): menu bar icon, hide from the Dock on close, open at
   login, and an About tab.
 - Update check: the app asks the public GitHub releases API (anonymously, at most

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0-rc.5 — 2026-10-24
+
+- Fix a crash at launch in rc.4: SwiftUI writes the menu bar icon state back while
+  building the scenes, and that unchanged value was published as a preference
+  change, re-evaluating the scenes until the stack overflowed. Only real changes
+  are now published.
+
 ## 0.3.0-rc.4 — 2026-10-23
 
 - New Configurações window (⌘,) with Geral, Atualizações, Serviço privilegiado and
