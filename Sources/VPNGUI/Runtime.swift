@@ -290,6 +290,10 @@ final class VPNManager: ObservableObject {
         var wireGuardLaunched: ((Session, WireGuardRequest) -> Void)? = nil
     }
     var harness: LaunchHarness?
+    /// "DNS da internet" from Configurações, read at each connection (nil = do not change).
+    var internetDNS: () -> [String]? = { nil }
+    /// Reads the client certificate from the Keychain (replaced by local checks).
+    var certificateExporter: (ClientCertificateReference) throws -> ClientCertificate = ClientIdentities.export
     var changed: (() -> Void)?
     var retry: ((UUID) -> Void)?
     var anyActive: Bool { sessions.values.contains { $0.state.active } }
@@ -391,14 +395,41 @@ final class VPNManager: ObservableObject {
                 session.log("Autenticação SAML na porta local \(HelperConstants.samlPort).")
             }
         }
-        let request: ConnectionRequest
-        do {
-            let c = try connection.validated()
-            request = ConnectionRequest(connectionID: c.id, host: c.server, port: c.port, username: c.username,
+        let validated: Connection
+        do { validated = try connection.validated() }
+        catch { end(session, exit: nil, error: error.localizedDescription); return }
+        guard let reference = validated.clientCertificate else {
+            send(session, connection: connection, validated: validated, password: password, cookie: cookie, plan: plan, certificate: nil)
+            return
+        }
+        // Exported off the main thread: macOS may show its Keychain access dialog meanwhile.
+        session.log("Usando o certificado do cliente \"\(reference.name)\" do Keychain. Se o macOS pedir, permita o acesso do TunnelMac à chave.")
+        let generation = session.generation
+        let exporter = certificateExporter
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try exporter(reference) }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, session.generation == generation, session.state.active else { return }
+                if session.wantsDisconnect { self.end(session, exit: 0); return }
+                switch result {
+                case .success(let certificate):
+                    self.send(session, connection: connection, validated: validated, password: password, cookie: cookie,
+                              plan: plan, certificate: certificate)
+                case .failure(let error):
+                    session.retryBlocked = true // A refused Keychain access must not prompt again by itself.
+                    self.end(session, exit: nil, error: error.localizedDescription)
+                }
+            }
+        }
+    }
+    private func send(_ session: Session, connection: Connection, validated c: Connection, password: String?, cookie: String?,
+                      plan: LaunchPlan, certificate: ClientCertificate?) {
+        let request = ConnectionRequest(connectionID: c.id, host: c.server, port: c.port, username: c.username,
                                         authentication: c.authentication, trustedCertificate: c.trustedCertificate,
                                         password: c.authentication == .password ? password : nil,
-                                        mode: plan.mode, cookie: plan.mode == .reuse ? cookie : nil)
-        } catch { end(session, exit: nil, error: error.localizedDescription); return }
+                                        mode: plan.mode, cookie: plan.mode == .reuse ? cookie : nil,
+                                        clientCertificate: certificate, realm: c.realm.isEmpty ? nil : c.realm,
+                                        internetDNS: internetDNS())
         session.cookieMode = plan.mode
         running[session.id] = connection
         if let harness { harness.launched(session, request, plan); return }
@@ -439,7 +470,7 @@ final class VPNManager: ObservableObject {
         do {
             let c = try connection.validated()
             guard let profile else { throw AppFailure("Perfil WireGuard indisponível; importe-o novamente.") }
-            request = WireGuardRequest(connectionID: c.id, profile: profile)
+            request = WireGuardRequest(connectionID: c.id, profile: profile, internetDNS: internetDNS())
         } catch { end(session, exit: nil, error: error.localizedDescription); return }
         running[session.id] = connection
         if let harness { harness.wireGuardLaunched?(session, request); return }

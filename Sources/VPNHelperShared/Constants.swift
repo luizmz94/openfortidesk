@@ -11,10 +11,10 @@ public enum HelperConstants {
     /// Single source of the product version; scripts/build.sh writes it into Info.plist.
     public static let version = "0.5.0"
     public static let releaseVersion = "0.5.0-rc.1"
-    public static let build = "20"
+    public static let build = "24"
     public static var fullVersion: String { "\(version) (\(build))" }
     /// Bumped whenever a request, response or event changes shape or meaning.
-    public static let protocolVersion = 4
+    public static let protocolVersion = 6
     /// Gateways commonly return to a fixed localhost:8020. Never random, never configurable by the client.
     public static let samlPort = 8020
     /// OpenVPN profiles carry inline certificates and keys (normalized profile ≤ 96 KB).

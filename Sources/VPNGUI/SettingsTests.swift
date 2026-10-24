@@ -99,6 +99,27 @@ enum SettingsTests {
         defer { for id in created { try? passwords.delete(id); try? cookies.delete(id) } }
         let rc4 = ReleaseVersion("0.3.0-rc.4")!
 
+        test("DNS da internet: Cloudflare por padrão, presets, personalizado salvo e removido, e opção de não alterar") {
+            let preferences = AppPreferences.disposable()
+            try require(preferences.internetDNSServers == ["1.1.1.1", "1.0.0.1"], "Padrão não é a Cloudflare")
+            try require(preferences.internetDNSOptions.map(\.label) == ["1.1.1.1 - Cloudflare", "8.8.8.8 - Google", "94.140.14.14 - AdGuard (bloqueia anúncios)"], "Lista inesperada")
+            preferences.internetDNSSelection = "google"
+            try require(preferences.internetDNSServers == ["8.8.8.8", "8.8.4.4"], "Google não aplicado")
+            let mine = try InternetDNSOption.custom(name: "Meu DNS", servers: "192.0.2.53, 2001:db8::53")
+            preferences.addCustomDNS(mine)
+            try require(preferences.internetDNSServers == ["192.0.2.53", "2001:db8::53"], "Personalizado não selecionado")
+            let reopened = AppPreferences(defaults: preferences.defaults)
+            try require(reopened.internetDNSServers == ["192.0.2.53", "2001:db8::53"] && reopened.customInternetDNS.count == 1, "Personalizado não persistiu")
+            preferences.removeCustomDNS(mine.id)
+            try require(preferences.internetDNSServers == ["1.1.1.1", "1.0.0.1"], "Remover não voltou ao padrão")
+            preferences.internetDNSSelection = "sumiu"
+            try require(preferences.internetDNSServers == ["1.1.1.1", "1.0.0.1"], "Seleção inexistente sem padrão")
+            preferences.internetDNSSelection = InternetDNSOption.offID
+            try require(preferences.internetDNSServers == nil, "Não alterar ainda envia DNS")
+            for (name, servers) in [("", "1.1.1.1"), ("X", "dns.invalid"), ("X", ""), (String(repeating: "a", count: 41), "1.1.1.1")] {
+                try require((try? InternetDNSOption.custom(name: name, servers: servers)) == nil, "Personalizado inválido aceito: \(name) \(servers)")
+            }
+        }
         test("ReleaseVersion: ordem com rc e parsing estrito das tags") {
             let ordered = ["0.3.0-rc.3", "0.3.0-rc.4", "0.3.0", "0.3.1-rc.1", "0.3.1", "0.10.0", "1.0.0-rc.1"].map { ReleaseVersion($0)! }
             for (a, b) in zip(ordered, ordered.dropFirst()) { try require(a < b && !(b < a), "\(a) deveria ser menor que \(b)") }

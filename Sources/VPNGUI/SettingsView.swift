@@ -237,10 +237,95 @@ struct GeneralSettings: View {
                 }
             }
         }
-        SettingsSection(title: "Ao sair") {
-            SettingsRow(symbol: "rectangle.portrait.and.arrow.right", color: .orange, title: "Fechar a janela não desconecta",
-                        subtitle: "As VPNs continuam ativas com a janela fechada. Sair (⌘Q ou pela barra de menus) desconecta as VPNs antes de encerrar o app.")
+        InternetDNSSection(preferences: preferences)
+    }
+}
+
+/// "DNS da internet": servers the service puts on the primary network while a VPN is
+/// connected, restoring the previous ones afterwards. Presets plus entries typed by the user.
+struct InternetDNSSection: View {
+    @ObservedObject var preferences: AppPreferences
+    @State private var adding = false
+
+    var body: some View {
+        SettingsSection(title: "Rede") {
+            SettingsRow(symbol: "network", color: .teal, title: "DNS da internet",
+                        subtitle: "Aplicado com uma VPN conectada; o anterior volta ao desconectar.") {
+                menu
+            }
         }
+        .sheet(isPresented: $adding) { AddInternetDNSSheet(preferences: preferences) }
+    }
+
+    private var selectedID: String {
+        let id = preferences.internetDNSSelection
+        return id == InternetDNSOption.offID || preferences.internetDNSOptions.contains { $0.id == id } ? id : InternetDNSOption.defaultID
+    }
+
+    private var selectedLabel: String {
+        selectedID == InternetDNSOption.offID ? "Não alterar"
+            : preferences.internetDNSOptions.first { $0.id == selectedID }?.label ?? InternetDNSOption.cloudflare.label
+    }
+
+    private var menu: some View {
+        Menu {
+            // Inline pickers get the native checkmark on the selected item.
+            Picker("DNS da internet", selection: selection) {
+                ForEach(preferences.internetDNSOptions) { Text($0.label).tag($0.id) }
+            }
+            .pickerStyle(.inline).labelsHidden()
+            Divider()
+            Picker("Não alterar", selection: selection) {
+                Text("Não alterar o DNS").tag(InternetDNSOption.offID)
+            }
+            .pickerStyle(.inline).labelsHidden()
+            Divider()
+            Button("Adicionar mais…") { adding = true }
+            if let custom = preferences.customInternetDNS.first(where: { $0.id == selectedID }) {
+                Button("Remover \u{201C}\(custom.name)\u{201D}", role: .destructive) { preferences.removeCustomDNS(custom.id) }
+            }
+        } label: {
+            Text(selectedLabel).lineLimit(1).truncationMode(.tail)
+        }
+        .menuStyle(.borderlessButton)
+        .frame(maxWidth: 230, alignment: .trailing)
+        .accessibilityLabel("DNS da internet")
+    }
+
+    private var selection: Binding<String> {
+        Binding(get: { selectedID }, set: { preferences.internetDNSSelection = $0 })
+    }
+}
+
+struct AddInternetDNSSheet: View {
+    @ObservedObject var preferences: AppPreferences
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var servers = ""
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Adicionar DNS").font(.headline)
+            Form {
+                TextField("Nome", text: $name, prompt: Text("Meu DNS"))
+                TextField("Servidores", text: $servers, prompt: Text("9.9.9.9, 149.112.112.112"))
+            }
+            .formStyle(.grouped)
+            Text("Até 4 endereços IPv4 ou IPv6, separados por vírgula.").font(.caption).foregroundStyle(.secondary)
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
+            HStack {
+                Spacer()
+                Button("Cancelar") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Adicionar") {
+                    do { preferences.addCustomDNS(try InternetDNSOption.custom(name: name, servers: servers)); dismiss() }
+                    catch { self.error = error.localizedDescription }
+                }
+                .keyboardShortcut(.defaultAction).adaptiveButtonStyle(prominent: true)
+            }
+        }
+        .padding(20)
+        .frame(width: 400)
     }
 }
 

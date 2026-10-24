@@ -94,6 +94,7 @@ final class HelperFixture {
     let listener = NSXPCListener.anonymous()
     let recorder: RecordingDelegate
     let authorizer = FakeAuthorizer()
+    let dns: FakeSupplementalDNS
     var store: RuntimeStore { core.stateStore }
 
     static func temporaryRoot() throws -> String {
@@ -104,7 +105,9 @@ final class HelperFixture {
     }
 
     init(root existing: String? = nil, listenerRequirement: String?, delegateRequirement: String?,
-         wireGuardHost: WireGuardHost = SystemWireGuardHost(uapiDirectory: "/nonexistent-uapi"), wireGuardInterval: TimeInterval = 3) throws {
+         wireGuardHost: WireGuardHost = SystemWireGuardHost(uapiDirectory: "/nonexistent-uapi"), wireGuardInterval: TimeInterval = 3,
+         dns: FakeSupplementalDNS = FakeSupplementalDNS()) throws {
+        self.dns = dns
         root = try existing ?? Self.temporaryRoot()
         state = root + "/state"
         core = HelperCore(HelperCore.Configuration(
@@ -117,7 +120,8 @@ final class HelperFixture {
             authorizer: authorizer,
             idleTimeout: 3600,
             wireGuardHost: wireGuardHost,
-            wireGuardInterval: wireGuardInterval))
+            wireGuardInterval: wireGuardInterval,
+            supplementalDNS: dns))
         recorder = RecordingDelegate(HelperListenerDelegate(core: core, clientRequirement: delegateRequirement))
         if let listenerRequirement { listener.setConnectionCodeSigningRequirement(listenerRequirement) }
         listener.delegate = recorder
@@ -147,12 +151,18 @@ final class HelperFixture {
     esac
     echo "INFO:   Connected to gateway."
     echo "ARGS=$*"
+    cert=$(printf '%s\n' "$conf" | /usr/bin/sed -n 's/^user-cert = //p')
+    if [ -n "$cert" ]; then
+      key=$(printf '%s\n' "$conf" | /usr/bin/sed -n 's/^user-key = //p')
+      echo "CERTFILES=$cert $key $(/usr/bin/stat -f %Lp "$cert") $(/usr/bin/head -1 "$cert") $(/usr/bin/head -1 "$key")"
+    fi
     echo "ENVKEYS=$(/usr/bin/env | /usr/bin/cut -d= -f1 | /usr/bin/sort | /usr/bin/tr '\\n' ' ')"
     echo "OPENFDS=$(for f in 4 5 6 7 8 9 10; do [ -e /dev/fd/$f ] && printf '%s ' $f; done)"
     for a in "$@"; do
       [ "$a" = "--cookie-on-stdin" ] && echo "STDIN_MD5=$(/sbin/md5 -q)"
       [ "$a" = "-v" ] && echo "DEBUG:  Cookie: SVPNCOOKIE=fixturecaptureZq9"
     done
+    echo "INFO:   Got addresses: [10.9.0.2], ns [10.9.0.53, 0.0.0.0], ns_suffix [Corp.invalid;lab.invalid]"
     echo "INFO:   Tunnel is up and running."
     trap 'echo "INFO:   Logged out."; exit 0' TERM
     while :; do /bin/sleep 1 & wait $!; done
@@ -255,4 +265,16 @@ extension TestSupport {
     static func sha256(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
+}
+
+/// Records the per-domain resolvers the helper would publish in the dynamic store.
+final class FakeSupplementalDNS: SupplementalDNS {
+    private let lock = NSLock()
+    private var values: [String: [String: Any]] = [:]
+    private(set) var flushes = 0
+    var published: [String: [String: Any]] { lock.withLock { values } }
+    func set(token: String, value: [String: Any]) -> Bool { lock.withLock { values[token] = value }; return true }
+    func remove(token: String) { lock.withLock { _ = values.removeValue(forKey: token) } }
+    func tokens() -> [String] { lock.withLock { Array(values.keys) } }
+    func flush() { lock.withLock { flushes += 1 } }
 }

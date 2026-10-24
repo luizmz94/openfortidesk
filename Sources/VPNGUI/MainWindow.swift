@@ -576,12 +576,15 @@ struct ConnectionDetail: View {
 
     private var fortinetFacts: some View {
         Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 14, verticalSpacing: 7) {
-            fact("Servidor", "\(connection.server):\(String(connection.port))")
+            fact("Servidor", connection.endpoint)
             fact("Usuário", connection.username.isEmpty ? "—" : connection.username)
             fact("Autenticação", connection.authentication.title)
             fact("Certificado", connection.trustedCertificate.isEmpty
                  ? "Validação padrão do sistema"
                  : "SHA-256 fixado · …\(connection.trustedCertificate.suffix(12))")
+            if let client = connection.clientCertificate {
+                fact("Certificado do cliente", client.name)
+            }
         }
         .font(.callout)
     }

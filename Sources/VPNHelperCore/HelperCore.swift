@@ -23,10 +23,14 @@ public final class HelperCore {
         public var wireGuardHost: WireGuardHost
         /// Monitor period of WireGuard sessions (handshake, gateway and DNS checks).
         public var wireGuardInterval: TimeInterval
+        /// Per-domain DNS of openfortivpn sessions (production: the dynamic store).
+        public var supplementalDNS: SupplementalDNS
         public init(stateDirectory: String, ownership: TrustedOwnership, supervisorSource: String,
                     supervisorRequirement: String?, helperVersion: String, probeIdentity: (uid_t, gid_t)?,
                     authorizer: AdminAuthorizing, idleTimeout: TimeInterval = 30, onIdle: (() -> Void)? = nil,
-                    wireGuardHost: WireGuardHost = SystemWireGuardHost(), wireGuardInterval: TimeInterval = 3) {
+                    wireGuardHost: WireGuardHost = SystemWireGuardHost(), wireGuardInterval: TimeInterval = 3,
+                    supplementalDNS: SupplementalDNS = SystemSupplementalDNS()) {
+            self.supplementalDNS = supplementalDNS
             self.stateDirectory = stateDirectory; self.ownership = ownership; self.supervisorSource = supervisorSource
             self.supervisorRequirement = supervisorRequirement; self.helperVersion = helperVersion
             self.probeIdentity = probeIdentity; self.authorizer = authorizer
@@ -55,15 +59,26 @@ public final class HelperCore {
     private(set) var sessions: [String: SessionRunner] = [:]
     private var maintenanceOwner: UUID?
     private var idleTask: DispatchWorkItem?
+    /// "DNS da internet", shared by every session that asks for it.
+    let internetDNS: InternetDNS
 
     public init(_ configuration: Configuration) {
         self.configuration = configuration
         store = RuntimeStore(root: configuration.stateDirectory, ownership: configuration.ownership,
                              probeIdentity: configuration.probeIdentity)
         try? store.prepareDirectories()
+        internetDNS = InternetDNS(host: configuration.wireGuardHost, recordPath: store.internetDNSRecord)
         registry = SessionRegistry(path: (try? configuration.ownership.verifyChain(configuration.stateDirectory)) != nil ? store.registryPath : nil)
         queue.async {
             self.recoverWireGuard()
+            self.internetDNS.recover()
+            let live = Set(self.registry.stale(excluding: []).map(\.token))
+            self.store.sweepClientCertificates(keeping: live)
+            // Per-domain DNS left by sessions of an earlier helper process.
+            let dns = self.configuration.supplementalDNS
+            let leftovers = dns.tokens().filter { !live.contains($0) }
+            leftovers.forEach { dns.remove(token: $0) }
+            if !leftovers.isEmpty { dns.flush() }
             self.scheduleIdleCheck()
         }
     }
@@ -262,7 +277,12 @@ public final class HelperCore {
         let runtime: ActiveRuntime
         do { runtime = try store.loadActive(.wireguard) } catch { return .failure(Self.wrap(error)) }
         let profile: WireGuardProfile
-        do { profile = try WireGuardProfile.validated(request.profile) } catch { return .failure(Self.wrap(error)) }
+        let internetServers: [String]?
+        do {
+            profile = try WireGuardProfile.validated(request.profile)
+            internetServers = try request.internetDNS.map(ConnectionRules.internetDNS)
+        } catch { return .failure(Self.wrap(error)) }
+        let internetDNS = self.internetDNS
         recoverWireGuard()
         do { try store.prepareDirectories() } catch { return .failure(Self.wrap(error)) }
         let token = UUID().uuidString
@@ -280,7 +300,15 @@ public final class HelperCore {
                       secrets: [], token: token, environment: environment) { [queue] runner in
             tunnel.emit = { [weak runner] line in queue.async { runner?.pump.enqueue(.line(line)) } }
             tunnel.fail = { [weak runner] in queue.async { runner?.stop() } }
-            return tunnel
+            guard let servers = internetServers else { return tunnel }
+            guard profile.dnsServers.isEmpty else {
+                tunnel.emit("[i] O perfil WireGuard define o próprio DNS; o DNS da internet do TunnelMac não é usado nesta conexão.")
+                return tunnel
+            }
+            let hold = InternetDNSHold(token: token, servers: servers, controller: internetDNS, trigger: nil)
+            hold.emit = tunnel.emit
+            tunnel.ready = { hold.tunnelUp() }
+            return SessionObservers([tunnel, hold])
         }
     }
 
@@ -291,17 +319,43 @@ public final class HelperCore {
         let plan: LaunchPlan
         do { plan = try request.validatedPlan(capabilities: runtime.manifest.capabilities) }
         catch { return .failure(Self.wrap(error)) }
+        let token = UUID().uuidString
+        var files: ClientCertificateFiles?
         var content: Data
         do {
+            if let certificate = request.clientCertificate {
+                files = try store.writeClientCertificate(try certificate.validated(), token: token)
+            }
             content = Data(try ConfigRenderer.render(host: request.host, port: request.port, username: request.username,
                                                      password: request.authentication == .password ? request.password : nil,
-                                                     trustedCertificate: request.trustedCertificate).utf8)
-        } catch { return .failure(Self.wrap(error)) }
+                                                     trustedCertificate: request.trustedCertificate,
+                                                     realm: request.realm ?? "", clientCertificate: files).utf8)
+        } catch {
+            if files != nil { store.removeClientCertificate(token: token) }
+            return .failure(Self.wrap(error))
+        }
         defer { content.resetBytes(in: 0..<content.count) }
-        return launch(connectionID: request.connectionID, client: client, runtime: runtime, content: content,
-                      cookie: plan.usesCookie ? request.cookie : nil,
-                      supervisorArguments: plan.supervisorArguments(binary: runtime.executable), plan: plan,
-                      secrets: plan.usesCookie ? [request.cookie ?? ""] : [])
+        var secrets = plan.usesCookie ? [request.cookie ?? ""] : []
+        if let files { secrets.append(files.passphrase) }
+        let store = self.store
+        let dns = FortinetDNS(token: token, store: configuration.supplementalDNS)
+        let internetDNS = self.internetDNS
+        let response = launch(connectionID: request.connectionID, client: client, runtime: runtime, content: content,
+                              cookie: plan.usesCookie ? request.cookie : nil,
+                              supervisorArguments: plan.supervisorArguments(binary: runtime.executable), plan: plan,
+                              secrets: secrets, token: token) { [queue] runner in
+            dns.emit = { [weak runner] line in queue.async { runner?.pump.enqueue(.line(line)) } }
+            var observers: [SessionObserver] = [dns]
+            if let servers = try? request.internetDNS.map(ConnectionRules.internetDNS) {
+                let hold = InternetDNSHold(token: token, servers: servers, controller: internetDNS, trigger: "Tunnel is up and running")
+                hold.emit = dns.emit
+                observers.append(hold)
+            }
+            if files != nil { observers.append(CertificateCleanup { store.removeClientCertificate(token: token) }) }
+            return SessionObservers(observers)
+        }
+        if case .failure = response, files != nil { store.removeClientCertificate(token: token) }
+        return response
     }
 
     /// Supervisor start shared by every client: protected config descriptor, optional cookie

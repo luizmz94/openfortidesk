@@ -186,9 +186,16 @@ enum UIPreviewTests {
                                               .wireguard: .init(path: "/opt/homebrew/bin/wireguard-go", exists: true, version: "0.0.20250522", sourceChanged: false)],
                                       latest: [.openvpn: "2.7.10", .openfortivpn: "1.24.1", .wireguard: "0.0.20250522"])
                 try render(ServicePanel(model: bothModel, versions: versions).padding(20), NSSize(width: 620, height: 600), "service-panel-both")
+                let dnsDefault = AppPreferences.disposable()
+                let dnsCustom = AppPreferences.disposable()
+                dnsCustom.addCustomDNS(try InternetDNSOption.custom(name: "Servidor de casa com nome longo", servers: "192.0.2.53"))
+                for (preferences, name) in [(dnsDefault, "settings-dns-default"), (dnsCustom, "settings-dns-custom")] {
+                    try render(VStack(alignment: .leading, spacing: 18) { InternetDNSSection(preferences: preferences) }.padding(24),
+                               NSSize(width: 540, height: 170), name)
+                }
             }
             let files = try FileManager.default.contentsOfDirectory(atPath: output.path).filter { $0.hasSuffix(".png") }
-            try require(files.count == 40, "Renders esperados: 40, gerados: \(files.count)")
+            try require(files.count == 44, "Renders esperados: 44, gerados: \(files.count)")
         }
         return failures
     }

@@ -206,7 +206,7 @@ struct ServicePanel: View {
             Button("Ativar serviço") { service.activate() }.fixedSize().adaptiveButtonStyle(prominent: true).disabled(service.busy)
         case .requiresApproval:
             Button("Abrir Ajustes") { service.openSettings() }.fixedSize().adaptiveButtonStyle(prominent: true)
-        case .outdated:
+        case .outdated, .incompatible:
             Button("Atualizar serviço") { service.update() }.fixedSize().adaptiveButtonStyle(prominent: true).disabled(service.busy)
         default:
             EmptyView()

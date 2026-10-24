@@ -102,6 +102,15 @@ protocol SessionObserver: AnyObject {
     func clientEnded()
 }
 
+/// Removes a session's client certificate files once its client has exited.
+final class CertificateCleanup: SessionObserver {
+    private let remove: () -> Void
+    init(_ remove: @escaping () -> Void) { self.remove = remove }
+    func clientStarted(pid: pid_t) {}
+    func clientOutput(_ line: String) {}
+    func clientEnded() { remove() }
+}
+
 /// One openfortivpn under its own supervisor. The helper keeps the supervisor's PID
 /// (its child, never looked up by name) and the control socket. Stop = "STOP\n";
 /// losing the helper or the client = EOF, which the supervisor treats as a stop too.

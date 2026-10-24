@@ -9,7 +9,15 @@ Changes in 0.5.0-rc.1:
 - The privileged service approves and freezes `wireguard-go` and sets up the tunnel
   itself (keys over UAPI, addresses, routes, endpoint route and DNS), without wg-quick
   or bash; routes and DNS are undone on disconnect and after a crash.
-- Helper protocol 4: use Atualizar serviço after upgrading.
+- Fortinet client certificates: pick a certificate from the Keychain or import a
+  `.p12`/`.pfx`. Each connection exports the key encrypted, only for that session.
+- The Fortinet Servidor field takes the gateway like FortiClient: `vpn.example.com`,
+  `vpn.example.com:10443` or `vpn.example.com:443/realm` (no separate port field).
+- Fortinet DNS now works in apps (not only in nslookup): the gateway's DNS servers and
+  domains become a per-domain resolver while the tunnel is up.
+- DNS da internet (Configurações › Geral): Cloudflare (default), Google, AdGuard, your
+  own entries or Não alterar. Applied while a VPN is connected, restored afterwards.
+- Helper protocol 6: use Atualizar serviço after upgrading.
 
 Changes in 0.4.0-rc.1:
 - OpenVPN 2.7+ support next to Fortinet: import a single `.ovpn`/`.conf` or a

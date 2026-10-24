@@ -57,7 +57,8 @@ struct ConnectionEditor: View {
     @State var pendingWireGuard: WireGuardImport?
     var saved: () -> Void
     @State private var password = ""
-    @State private var portText = ""
+    /// Fortinet gateway as typed: host, host:port or host:port/realm.
+    @State private var gatewayText = ""
     @State private var error: String?
     @State private var loaded = false
     @State private var applyDigestFix = false
@@ -67,6 +68,8 @@ struct ConnectionEditor: View {
     @State private var dropTargeted = false
     /// Saved import whose originals may now go to the Trash (asked once, after saving).
     @State private var cleanup: ImportCleanup?
+    /// Keychain identities offered as client certificate (Fortinet).
+    @State private var identities: [ClientIdentity] = []
     @FocusState private var focus: Field?
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -84,7 +87,7 @@ struct ConnectionEditor: View {
         self.saved = saved
     }
 
-    private enum Field: Hashable { case name, server, port, username, password, certificate }
+    private enum Field: Hashable { case name, server, username, password, certificate }
     private enum Step { case chooseKind, chooseFiles, form }
 
     private var isNew: Bool { !model.data.connections.contains { $0.id == connection.id } }
@@ -306,9 +309,8 @@ struct ConnectionEditor: View {
         }
         .frame(width: 560, height: connection.usesProfile ? 640 : 600)
         .animation(Motion.state(reduceMotion), value: error)
-        .onChange(of: focus) { field in if field != .server && !connection.usesProfile { splitServerPort() } }
         .onAppear {
-            portText = String(connection.port)
+            gatewayText = GatewayAddress.display(host: connection.server, port: connection.port, realm: connection.realm)
             if model.manager.session(connection.id).authenticationRejected {
                 password = ""
                 error = "A última autenticação foi recusada. Confira o usuário e digite a senha novamente para evitar um bloqueio."
@@ -341,11 +343,9 @@ struct ConnectionEditor: View {
         Section("Gateway") {
             TextField("Nome", text: $connection.name, prompt: Text("Escritório"))
                 .focused($focus, equals: .name)
-            TextField("Servidor", text: $connection.server, prompt: Text("vpn.exemplo.com"))
+            TextField("Servidor", text: $gatewayText, prompt: Text("vpn.exemplo.com:10443"))
                 .focused($focus, equals: .server)
-            TextField("Porta", text: $portText, prompt: Text("443"))
-                .focused($focus, equals: .port)
-                .monospacedDigit()
+                .help("Como no FortiClient: vpn.exemplo.com, vpn.exemplo.com:10443 ou vpn.exemplo.com:443/realm. Sem porta, usa 443.")
         }
         Section {
             Picker("Método", selection: $connection.authentication) {
@@ -365,8 +365,75 @@ struct ConnectionEditor: View {
         Section {
             TextField("SHA-256 confiável", text: $connection.trustedCertificate, prompt: Text("Opcional"))
                 .focused($focus, equals: .certificate)
+            Picker("Certificado do cliente", selection: certificateSelection) {
+                Text("Nenhum").tag(String?.none)
+                ForEach(identities) { identity in
+                    Text(identityLabel(identity)).tag(Optional(identity.sha1))
+                }
+                if let reference = connection.clientCertificate, !identities.contains(where: { $0.sha1 == reference.sha1 }) {
+                    Text("\(reference.name) (não encontrado no Keychain)").tag(Optional(reference.sha1))
+                }
+            }
+            HStack {
+                Spacer()
+                Button("Importar .p12…") { importCertificate() }
+            }
         } header: {
             Text("Certificado")
+        } footer: {
+            Text("Use o certificado do cliente quando o gateway pedir um (no FortiClient, \"Certificado do Cliente\"). Ele fica no Keychain; a cada conexão o macOS pode pedir para o TunnelMac usar a chave.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .onAppear { identities = ClientIdentities.list() }
+    }
+
+    private var certificateSelection: Binding<String?> {
+        Binding(get: { connection.clientCertificate?.sha1 }, set: { sha1 in
+            guard let sha1 else { connection.clientCertificate = nil; return }
+            if let identity = identities.first(where: { $0.sha1 == sha1 }) { connection.clientCertificate = identity.reference }
+        })
+    }
+
+    private func identityLabel(_ identity: ClientIdentity) -> String {
+        var label = identity.name
+        if !identity.issuer.isEmpty && identity.issuer != identity.name { label += " — \(identity.issuer)" }
+        if identity.expired { label += " (expirado)" }
+        return label
+    }
+
+    /// Imports a .p12/.pfx into the login keychain and selects it. The file password is used
+    /// only for the import and never saved.
+    private func importCertificate() {
+        let panel = NSOpenPanel()
+        panel.title = "Importar certificado do cliente"
+        panel.message = "Escolha o arquivo .p12 ou .pfx com o certificado e a chave. Ele será guardado no Keychain de login; o original não é alterado."
+        panel.prompt = "Continuar"
+        panel.allowedContentTypes = [.pkcs12]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+            guard data.count <= 1024 * 1024 else { throw AppFailure("Arquivo grande demais para um certificado.") }
+        } catch { self.error = error.localizedDescription; return }
+        let alert = NSAlert()
+        alert.messageText = "Senha do certificado"
+        alert.informativeText = "Digite a senha de \(url.lastPathComponent). Ela é usada só para importar o certificado e não é guardada."
+        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Importar")
+        alert.addButton(withTitle: "Cancelar")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            let identity = try ClientIdentities.importPKCS12(data, password: field.stringValue)
+            field.stringValue = ""
+            identities = ClientIdentities.list()
+            connection.clientCertificate = identity.reference
+            error = nil
+        } catch {
+            field.stringValue = ""
+            self.error = error.localizedDescription
         }
     }
 
@@ -541,20 +608,14 @@ struct ConnectionEditor: View {
                     return
                 }
             } else {
-                splitServerPort()
-                guard let port = Int(portText) else { throw AppFailure("Informe uma porta numérica.") }
-                connection.port = port
+                let gateway = try GatewayAddress.parse(gatewayText)
+                connection.server = gateway.host
+                connection.port = gateway.port
+                connection.realm = gateway.realm
                 try model.save(connection, password: password)
             }
             saved(); dismiss()
         } catch { self.error = error.localizedDescription }
-    }
-
-    private func splitServerPort() {
-        if let value = HostPortInput.split(connection.server) {
-            connection.server = value.host
-            portText = String(value.port)
-        }
     }
 }
 

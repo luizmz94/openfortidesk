@@ -374,6 +374,12 @@ final class ServiceController: ObservableObject, SessionTransport {
                 // the way out. Any such process keeps the removal refused.
                 let running = self?.privilegedProcesses() ?? []
                 done(running.isEmpty)
+            case .success(.failure(let failure)) where failure.code == .incompatibleProtocol,
+                 .failure(let failure) where failure.code == .incompatibleProtocol:
+                // A helper of another protocol answers but cannot be asked to pause. It is the
+                // only process allowed to run: any supervisor or approved client keeps it refused.
+                let running = (self?.privilegedProcesses() ?? []).filter { !$0.path.hasSuffix(".app/Contents/MacOS/VPNHelper") }
+                done(running.isEmpty)
             default: done(false) // Other replies (busy, other users' sessions) fail closed.
             }
         }

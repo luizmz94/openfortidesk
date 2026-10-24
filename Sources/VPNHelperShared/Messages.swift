@@ -42,18 +42,28 @@ public struct ConnectionRequest: Codable, Equatable, Sendable {
     public var password: String?
     public var mode: SAMLCookieMode
     public var cookie: String?
+    /// Optional client certificate (exported from the user's Keychain for this connection).
+    public var clientCertificate: ClientCertificate?
+    /// FortiGate realm; nil or empty when the gateway has none.
+    public var realm: String?
+    /// "DNS da internet" chosen in the app; nil = leave the system DNS alone.
+    public var internetDNS: [String]?
     public init(connectionID: UUID, host: String, port: Int, username: String, authentication: Authentication,
-                trustedCertificate: String, password: String?, mode: SAMLCookieMode, cookie: String?) {
+                trustedCertificate: String, password: String?, mode: SAMLCookieMode, cookie: String?,
+                clientCertificate: ClientCertificate? = nil, realm: String? = nil, internetDNS: [String]? = nil) {
         self.connectionID = connectionID; self.host = host; self.port = port; self.username = username
         self.authentication = authentication; self.trustedCertificate = trustedCertificate
-        self.password = password; self.mode = mode; self.cookie = cookie
+        self.password = password; self.mode = mode; self.cookie = cookie; self.clientCertificate = clientCertificate
+        self.realm = realm; self.internetDNS = internetDNS
     }
 
     /// Validation run by the helper against the approved runtime. Returns the plan the
     /// helper will execute; the app's requested mode must match it exactly.
     public func validatedPlan(capabilities: RuntimeCapabilities) throws -> LaunchPlan {
         _ = try ConfigRenderer.render(host: host, port: port, username: username, password: nil,
-                                      trustedCertificate: trustedCertificate)
+                                      trustedCertificate: trustedCertificate, realm: realm ?? "")
+        _ = try clientCertificate?.validated()
+        if let internetDNS { _ = try ConnectionRules.internetDNS(internetDNS) }
         switch authentication {
         case .password:
             guard let password, !password.isEmpty, !username.isEmpty else {
@@ -97,7 +107,11 @@ public struct OpenVPNRequest: Codable, Equatable, Sendable {
 public struct WireGuardRequest: Codable, Equatable, Sendable {
     public var connectionID: UUID
     public var profile: String
-    public init(connectionID: UUID, profile: String) { self.connectionID = connectionID; self.profile = profile }
+    /// "DNS da internet"; used only when the profile has no DNS of its own.
+    public var internetDNS: [String]?
+    public init(connectionID: UUID, profile: String, internetDNS: [String]? = nil) {
+        self.connectionID = connectionID; self.profile = profile; self.internetDNS = internetDNS
+    }
 }
 
 /// The VPN clients the helper can freeze and run. Each has its own approved copy.

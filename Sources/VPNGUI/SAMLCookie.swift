@@ -13,9 +13,11 @@ struct SAMLCookieIdentity: Equatable {
     init(_ connection: Connection) {
         let host = connection.server.trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "[]")).lowercased()
-        let parts = ["v1", connection.id.uuidString, host, String(connection.port), connection.username,
+        var parts = ["v1", connection.id.uuidString, host, String(connection.port), connection.username,
                      connection.authentication.rawValue,
                      connection.trustedCertificate.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()]
+        // Only when set, so sessions saved before realms existed keep their identity.
+        if !connection.realm.isEmpty { parts.append("realm=" + connection.realm) }
         let bytes = Data(parts.joined(separator: "\u{1f}").utf8)
         digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
     }

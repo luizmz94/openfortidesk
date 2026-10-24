@@ -304,7 +304,7 @@ enum OpenVPNTests {
         test("Cadastros: arquivo antigo continua Fortinet; OpenVPN guarda perfil 0600 fora do JSON e senha no Keychain") {
             let legacy = #"{"connections":[{"id":"9C5B1C55-7E66-4C3E-9B8C-3B7E6E9F2D10","name":"Antiga","server":"vpn.invalid","port":443,"username":"u","authentication":"password","trustedCertificate":""}]}"#
             let decoded = try JSONDecoder().decode(SavedData.self, from: Data(legacy.utf8))
-            try require(decoded.connections.first?.kind == .fortinet && decoded.connections.first?.endpoint == "vpn.invalid:443", "Cadastro antigo mudou")
+            try require(decoded.connections.first?.kind == .fortinet && decoded.connections.first?.endpoint == "vpn.invalid", "Cadastro antigo mudou")
             let directory = root.appendingPathComponent("model-\(UUID())")
             let service = HelperTests.readyService()
             let model = AppModel(store: try JSONStore(directory: directory), passwords: passwords, service: service)

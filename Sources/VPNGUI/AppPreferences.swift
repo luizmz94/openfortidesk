@@ -17,6 +17,8 @@ final class AppPreferences: ObservableObject {
         static let lastUpdateAttempt = "lastUpdateCheckAttempt"
         static let lastUpdateSuccess = "lastUpdateCheckSuccess"
         static let cachedOffer = "pendingUpdateOffer"
+        static let internetDNS = "internetDNSSelection"
+        static let customDNS = "customInternetDNS"
     }
 
     let defaults: UserDefaults
@@ -31,6 +33,11 @@ final class AppPreferences: ObservableObject {
     @Published var skippedVersion: String? { didSet { store(skippedVersion, Key.skippedVersion) } }
     @Published var lastUpdateAttempt: Date? { didSet { store(lastUpdateAttempt, Key.lastUpdateAttempt) } }
     @Published var lastUpdateSuccess: Date? { didSet { store(lastUpdateSuccess, Key.lastUpdateSuccess) } }
+    /// Id of the chosen "DNS da internet" (preset, custom or `InternetDNSOption.offID`).
+    @Published var internetDNSSelection: String { didSet { defaults.set(internetDNSSelection, forKey: Key.internetDNS) } }
+    @Published var customInternetDNS: [InternetDNSOption] {
+        didSet { defaults.set(try? JSONEncoder().encode(customInternetDNS), forKey: Key.customDNS) }
+    }
 
     init(defaults: UserDefaults, disposableSuite: String? = nil,
          currentVersion: String = HelperConstants.releaseVersion) {
@@ -45,6 +52,27 @@ final class AppPreferences: ObservableObject {
         skippedVersion = defaults.string(forKey: Key.skippedVersion)
         lastUpdateAttempt = defaults.object(forKey: Key.lastUpdateAttempt) as? Date
         lastUpdateSuccess = defaults.object(forKey: Key.lastUpdateSuccess) as? Date
+        internetDNSSelection = defaults.string(forKey: Key.internetDNS) ?? InternetDNSOption.defaultID
+        customInternetDNS = defaults.data(forKey: Key.customDNS).flatMap { try? JSONDecoder().decode([InternetDNSOption].self, from: $0) } ?? []
+    }
+
+    var internetDNSOptions: [InternetDNSOption] { InternetDNSOption.presets + customInternetDNS }
+
+    /// Servers sent with each connection; nil when the user chose not to change the DNS.
+    /// A selection that no longer exists falls back to the default (Cloudflare).
+    var internetDNSServers: [String]? {
+        guard internetDNSSelection != InternetDNSOption.offID else { return nil }
+        return (internetDNSOptions.first { $0.id == internetDNSSelection } ?? .cloudflare).servers
+    }
+
+    func addCustomDNS(_ option: InternetDNSOption) {
+        customInternetDNS.append(option)
+        internetDNSSelection = option.id
+    }
+
+    func removeCustomDNS(_ id: String) {
+        customInternetDNS.removeAll { $0.id == id }
+        if internetDNSSelection == id { internetDNSSelection = InternetDNSOption.defaultID }
     }
 
     deinit {

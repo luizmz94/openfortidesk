@@ -1,5 +1,45 @@
 import Foundation
  
+/// The single "Servidor" field of a Fortinet connection, written like FortiClient's
+/// remote gateway: host, host:port or host:port/realm (port 443 when omitted).
+enum GatewayAddress {
+    static let defaultPort = 443
+
+    static func parse(_ input: String) throws -> (host: String, port: Int, realm: String) {
+        var value = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.lowercased().hasPrefix("https://") { value = String(value.dropFirst("https://".count)) }
+        var realm = ""
+        if let slash = value.firstIndex(of: "/") {
+            realm = String(value[value.index(after: slash)...])
+            if realm.hasSuffix("/") { realm.removeLast() }
+            value = String(value[..<slash])
+        }
+        var host = value, port = defaultPort
+        if let split = HostPortInput.split(value) {
+            host = split.host; port = split.port
+        } else if value.filter({ $0 == ":" }).count == 1 {
+            throw AppFailure("Porta inválida. Use vpn.exemplo.com ou vpn.exemplo.com:10443.")
+        }
+        do {
+            host = try ConnectionRules.normalizedHost(host)
+            try ConnectionRules.checkRealm(realm)
+        } catch let violation as RuleViolation {
+            throw AppFailure(host.isEmpty || violation.message.hasPrefix("Informe")
+                             ? "Informe o servidor como vpn.exemplo.com ou vpn.exemplo.com:10443." : violation.message)
+        }
+        return (host, port, realm)
+    }
+
+    /// Text shown in the field and in lists: the port only when it is not 443.
+    static func display(host: String, port: Int, realm: String) -> String {
+        guard !host.isEmpty else { return "" }
+        var text = host
+        if port != defaultPort { text += ":\(port)" }
+        if !realm.isEmpty { text += (port == defaultPort ? ":\(port)" : "") + "/\(realm)" }
+        return text
+    }
+}
+
 enum HostPortInput {
     static func split(_ input: String) -> (host: String, port: Int)? {
         let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -103,9 +143,13 @@ struct Connection: Codable, Identifiable, Equatable {
     /// app version reading this file can never try such a cadastro with openfortivpn.
     var server = ""
     var port = 443
+    /// FortiGate realm ("/realm" in the gateway address), empty when none.
+    var realm = ""
     var username = ""
     var authentication: Authentication = .password
     var trustedCertificate = ""
+    /// Fortinet only: Keychain identity sent as the client certificate.
+    var clientCertificate: ClientCertificateReference?
     var kind: VPNProtocol = .fortinet
     var openVPN: OpenVPNSummary?
     var wireGuard: WireGuardSummary?
@@ -126,7 +170,9 @@ struct Connection: Codable, Identifiable, Equatable {
     var endpoint: String {
         let servers: [String]
         switch kind {
-        case .fortinet: return "\(server):\(String(port))"
+        case .fortinet:
+            let address = GatewayAddress.display(host: server, port: port, realm: realm)
+            return address.isEmpty ? kind.title : address
         case .openvpn: servers = (openVPN?.remotes ?? []).map(\.display)
         case .wireguard: servers = wireGuard?.endpoints ?? []
         }
@@ -143,6 +189,8 @@ struct Connection: Codable, Identifiable, Equatable {
             guard wireGuard != nil else { throw AppFailure("Perfil WireGuard ausente; importe-o novamente.") }
             value.server = ""
             value.trustedCertificate = ""
+            value.clientCertificate = nil
+            value.realm = ""
             value.authentication = .password
             value.username = ""
             value.openVPN = nil
@@ -152,6 +200,8 @@ struct Connection: Codable, Identifiable, Equatable {
             guard let summary = openVPN else { throw AppFailure("Perfil OpenVPN ausente; importe-o novamente.") }
             value.server = ""
             value.trustedCertificate = ""
+            value.clientCertificate = nil
+            value.realm = ""
             value.authentication = .password
             value.username = username.trimmingCharacters(in: .whitespacesAndNewlines)
             if summary.requiresCredentials {
@@ -164,10 +214,14 @@ struct Connection: Codable, Identifiable, Equatable {
         do {
             value.server = try ConnectionRules.normalizedHost(server)
             try ConnectionRules.checkPort(port)
+            try ConnectionRules.checkRealm(realm)
             try ConnectionRules.checkConfigValue(username, label: "Usuário")
             value.trustedCertificate = try ConnectionRules.normalizedCertificate(trustedCertificate)
         } catch let violation as RuleViolation { throw AppFailure(violation.message) }
         guard authentication != .password || !username.isEmpty else { throw AppFailure("Informe o usuário.") }
+        if let reference = clientCertificate, !ClientCertificateReference.isValidHash(reference.sha1) {
+            throw AppFailure("Certificado do cliente inválido; escolha-o de novo.")
+        }
         return value
     }
 
@@ -179,7 +233,7 @@ struct Connection: Codable, Identifiable, Equatable {
 
 extension Connection {
     enum CodingKeys: String, CodingKey {
-        case id, name, server, port, username, authentication, trustedCertificate, kind, openVPN, wireGuard
+        case id, name, server, port, realm, username, authentication, trustedCertificate, clientCertificate, kind, openVPN, wireGuard
     }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -187,9 +241,11 @@ extension Connection {
         name = try values.decode(String.self, forKey: .name)
         server = try values.decode(String.self, forKey: .server)
         port = try values.decode(Int.self, forKey: .port)
+        realm = try values.decodeIfPresent(String.self, forKey: .realm) ?? ""
         username = try values.decode(String.self, forKey: .username)
         authentication = try values.decode(Authentication.self, forKey: .authentication)
         trustedCertificate = try values.decode(String.self, forKey: .trustedCertificate)
+        clientCertificate = try values.decodeIfPresent(ClientCertificateReference.self, forKey: .clientCertificate)
         kind = try values.decodeIfPresent(VPNProtocol.self, forKey: .kind) ?? .fortinet
         openVPN = try values.decodeIfPresent(OpenVPNSummary.self, forKey: .openVPN)
         wireGuard = try values.decodeIfPresent(WireGuardSummary.self, forKey: .wireGuard)

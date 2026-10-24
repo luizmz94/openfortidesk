@@ -300,6 +300,7 @@ struct VPNGUIApp: App {
         let model = UIReviewFixture.enabled ? UIReviewFixture.makeModel() : AppModel()
         model.service.refresh() // Read-only: registration status and authenticated handshake.
         let preferences = AppPreferences.forCurrentProcess()
+        model.manager.internetDNS = { [weak preferences] in preferences?.internetDNSServers }
         let updates = UpdateChecker.production(preferences: preferences)
         let menuBar = MenuBarCoordinator(model: model, preferences: preferences, updates: updates,
                                          loginItem: .production())

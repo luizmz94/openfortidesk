@@ -52,6 +52,24 @@ enum SelfTests {
                 try require(HostPortInput.split(invalid) == nil, "Entrada ambígua foi separada: \(invalid)")
             }
         }
+        test("Servidor Fortinet: host, host:porta e host:porta/realm num só campo, como no FortiClient") {
+            func parse(_ text: String) -> (String, Int, String)? { (try? GatewayAddress.parse(text)).map { ($0.host, $0.port, $0.realm) } }
+            try require(parse(" vpn.exemplo.invalid ")! == ("vpn.exemplo.invalid", 443, ""), "Host sem porta")
+            try require(parse("vpn.example.invalid:10443")! == ("vpn.example.invalid", 10443, ""), "Porta custom")
+            try require(parse("vpn.example.test:443/realm1")! == ("vpn.example.test", 443, "realm1"), "Realm")
+            try require(parse("https://vpn.exemplo.invalid:4443/")! == ("vpn.exemplo.invalid", 4443, ""), "Prefixo https")
+            try require(parse("[2001:db8::1]:10443")! == ("[2001:db8::1]", 10443, ""), "IPv6 com porta")
+            try require(parse("2001:db8::1")! == ("2001:db8::1", 443, ""), "IPv6 sem porta")
+            for invalid in ["", "vpn.invalid:0", "vpn.invalid:abc", "vpn.invalid:65536", "vpn.invalid:443/a b", "vpn.invalid/-x", "ftp://vpn.invalid", "vpn.invalid:443/a/b"] {
+                try require(parse(invalid) == nil, "Endereço inválido aceito: \(invalid)")
+            }
+            try require(GatewayAddress.display(host: "vpn.exemplo.invalid", port: 443, realm: "") == "vpn.exemplo.invalid", "443 exibido")
+            try require(GatewayAddress.display(host: "vpn.exemplo.invalid", port: 10443, realm: "") == "vpn.exemplo.invalid:10443", "Porta custom não exibida")
+            try require(GatewayAddress.display(host: "vpn.exemplo.invalid", port: 443, realm: "r1") == "vpn.exemplo.invalid:443/r1", "Realm não exibido")
+            let config = try ConfigRenderer.render(host: "vpn.invalid", port: 443, username: "u", password: nil, trustedCertificate: "", realm: "realm1")
+            try require(config.contains("realm = realm1\n"), "Realm fora da configuração")
+            try require((try? ConfigRenderer.render(host: "vpn.invalid", port: 443, username: "u", password: nil, trustedCertificate: "", realm: "x\nset-dns = 0")) == nil, "Realm com quebra aceito")
+        }
         test("Cronômetro começa somente com túnel ativo e reinicia entre execuções") {
             let session = Session(id: UUID())
             session.begin()
@@ -387,6 +405,7 @@ enum SelfTests {
         failures += HelperTests.run()
         failures += OpenVPNTests.run()
         failures += WireGuardTests.run()
+        failures += ClientCertificateTests.run()
         failures += UIPreviewTests.run()
         failures += SettingsTests.run() // After UIPreviewTests, which recreates ui-review/.
         print("\(failures == 0 ? "OK" : "FAIL"): \(failures) falha(s). Nenhuma VPN foi acessada; nenhum privilégio foi solicitado; nenhum serviço foi registrado.")

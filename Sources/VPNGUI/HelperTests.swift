@@ -133,6 +133,18 @@ enum HelperTests {
             (s, registrar) = service(incompatible)
             s.refresh()
             try require(spin(10) { if case .incompatible = s.health { return true }; return false }, "Protocolo incompatível não detectado")
+            // Atualizar serviço also works for a helper of another protocol: it cannot be asked to
+            // pause, so only the helper itself may be running; a supervisor keeps it refused.
+            s.privilegedProcesses = { [(1234, "/Applications/TunnelMac.app/Contents/MacOS/VPNHelper"),
+                                       (1235, HelperConstants.stateDirectory + "/supervisor/VPNSupervisor-x")] }
+            var finished = false
+            s.update { finished = true }
+            try require(spin(10) { finished } && !registrar.events.contains("unregister"), "Atualização com supervisor ativo não foi recusada")
+            s.privilegedProcesses = { [(1234, "/Applications/TunnelMac.app/Contents/MacOS/VPNHelper")] }
+            finished = false
+            s.update { finished = true }
+            try require(spin(10) { finished } && registrar.events.suffix(2) == ["unregister", "register"],
+                        "Serviço de protocolo antigo não foi atualizado: \(registrar.events)")
             let old = readyStatus()
             var changed = old; changed.helperVersion = "0.1.0 (1)"
             let outdatedStatus = changed
@@ -598,6 +610,128 @@ enum HelperTests {
             let session = model.manager.session(c.id)
             try require(spin(20) { session.state == .disconnected }, "Saída com muitas linhas não concluiu: \(session.state)")
             try require(session.logs.count <= 1500 && session.logs.contains { $0.contains("linha") || $0.contains("line 2999") || $0.contains("descartada") }, "Logs não limitados")
+        }
+
+        test("DNS da internet: troca no serviço principal ao subir o túnel e volta ao anterior quando a última VPN sai") {
+            try require(try ConnectionRules.internetDNS([" 1.1.1.1", "2606:4700:4700:0:0:0:0:1111", "1.1.1.1"]) == ["1.1.1.1", "2606:4700:4700::1111"], "Servidores não normalizados")
+            for bad in [[], ["vpn.invalid"], ["0.0.0.0"], ["1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4", "9.9.9.9"], ["1.1.1.1\nx"]] {
+                try require((try? ConnectionRules.internetDNS(bad)) == nil, "DNS inválido aceito: \(bad)")
+            }
+            let host = RecordingWireGuardHost()
+            let original: [String: Any] = ["ServerAddresses": ["192.0.2.53"], "__CONFIGURATION_ID__": "Default: SERVICE-A 0"]
+            host.dns["SERVICE-A"] = original
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("tunnelmac-idns-\(UUID())").path
+            try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: directory) }
+            let record = directory + "/internet-dns.json"
+            var owned = false
+            let controller = InternetDNS(host: host, recordPath: record)
+            controller.otherOwner = { owned }
+            controller.interval = 0.1
+            func current() -> [String] { host.dns["SERVICE-A"]?["ServerAddresses"] as? [String] ?? [] }
+            try require(controller.acquire(token: "a", servers: ["1.1.1.1", "1.0.0.1"]).contains("1.1.1.1, 1.0.0.1"), "Sem log")
+            try require(current() == ["1.1.1.1", "1.0.0.1"] && host.dns["SERVICE-A"]?["__CONFIGURATION_ID__"] as? String == "Default: SERVICE-A 0"
+                        && FileManager.default.fileExists(atPath: record), "DNS não aplicado ou chaves perdidas")
+            _ = controller.acquire(token: "b", servers: ["1.1.1.1", "1.0.0.1"])
+            try require(controller.release(token: "a") == nil && current() == ["1.1.1.1", "1.0.0.1"], "Primeira saída restaurou cedo")
+            // configd rewrote the key (network change): the monitor applies it again.
+            host.dns["SERVICE-A"] = original
+            try require(TestSupport.spin(3) { current() == ["1.1.1.1", "1.0.0.1"] }, "Monitor não reaplicou")
+            try require(controller.release(token: "b")?.contains("restaurado") == true && current() == ["192.0.2.53"]
+                        && !FileManager.default.fileExists(atPath: record), "Último não restaurou: \(current())")
+            // The user changed the DNS meanwhile: their value is kept.
+            _ = controller.acquire(token: "c", servers: ["8.8.8.8"])
+            owned = true // keeps the monitor from re-applying while the user changes the DNS
+            host.dns["SERVICE-A"] = ["ServerAddresses": ["9.9.9.9"]]
+            _ = controller.release(token: "c")
+            owned = false
+            try require(TestSupport.spin(3) { !controller.active } && current() == ["9.9.9.9"], "DNS do usuário foi trocado: \(current())")
+            // A WireGuard profile with its own DNS: nothing is applied while it owns the DNS.
+            host.dns["SERVICE-A"] = original
+            owned = true
+            try require(controller.acquire(token: "d", servers: ["1.1.1.1"]).contains("WireGuard") && current() == ["192.0.2.53"], "Brigou com o WireGuard")
+            _ = controller.release(token: "d")
+            owned = false
+            // Crash: a new helper process finds the record and restores the previous DNS.
+            let crashed = InternetDNS(host: host, recordPath: record)
+            crashed.otherOwner = { false }
+            _ = crashed.acquire(token: "e", servers: ["94.140.14.14"])
+            try require(current() == ["94.140.14.14"], "Não aplicou antes da queda")
+            let restarted = InternetDNS(host: host, recordPath: record)
+            restarted.recover()
+            try require(current() == ["192.0.2.53"] && !FileManager.default.fileExists(atPath: record), "Recuperação não restaurou: \(current())")
+            _ = crashed.release(token: "e")
+            try require(current() == ["192.0.2.53"], "Sessão antiga mexeu depois da recuperação")
+            // End to end: the app sends the choice; the helper applies it once the tunnel is up.
+            host.dns["SERVICE-A"] = original
+            let fixture = try HelperFixture(listenerRequirement: ownRequirement, delegateRequirement: ownRequirement, wireGuardHost: host)
+            defer { fixture.tearDown() }
+            try fixture.installFixtureRuntime()
+            let (model, _, _) = try endToEnd(fixture, "internet-dns")
+            defer { model.manager.disconnectAll(); _ = spin(15) { fixture.core.sessionCount == 0 } }
+            model.manager.internetDNS = { ["94.140.14.14", "94.140.15.15"] }
+            let c = profile("InternetDNS")
+            try model.save(c, password: "fixturePASSvalue42")
+            model.connect(c)
+            let session = model.manager.session(c.id)
+            try require(spin(15) { session.state == .connected && current() == ["94.140.14.14", "94.140.15.15"] }, "DNS da internet não aplicado: \(session.logs.suffix(3))")
+            try require(spin(5) { session.logs.contains { $0.hasPrefix("[#] DNS da internet: 94.140.14.14") } }, "Sem linha no log")
+            model.manager.disconnect(c.id)
+            try require(spin(15) { session.state == .disconnected } && spin(5) { current() == ["192.0.2.53"] }, "Não restaurou ao desconectar: \(current())")
+        }
+
+        test("DNS Fortinet: domínios do gateway viram DNS por domínio no sistema enquanto o túnel existe") {
+            let parsed = FortinetDNS.parse("INFO:   Got addresses: [172.29.0.7], ns [172.16.25.63, 10.1.4.100], ns_suffix [corp.example]")
+            try require(parsed?.servers == ["172.16.25.63", "10.1.4.100"] && parsed?.domains == ["corp.example"], "Linha com um domínio não lida")
+            let several = FortinetDNS.parse("INFO:   Got addresses: [10.0.106.6], ns [10.0.2.102, 10.0.0.91], ns_suffix [corp.example;parts.example]")
+            try require(several?.domains == ["corp.example", "parts.example"], "Vários domínios não separados")
+            let hostile = FortinetDNS.parse("INFO:   Got addresses: [1.2.3.4], ns [0.0.0.0, 999.1.1.1, 10.0.0.1], ns_suffix [a b;-bad.com;ok.com;x..y]")
+            try require(hostile?.servers == ["10.0.0.1"] && hostile?.domains == ["a", "b", "ok.com"], "Valores do gateway não filtrados: \(String(describing: hostile))")
+            try require(FortinetDNS.parse("INFO:   Tunnel is up and running.") == nil, "Linha comum lida como DNS")
+            guard let fixture = sharedFixture else { throw TestSupport.Failure("Fixture indisponível") }
+            let (model, _, _) = try endToEnd(fixture, "fortinet-dns")
+            defer { model.manager.disconnectAll(); _ = spin(15) { fixture.core.sessionCount == 0 } }
+            let c = profile("DNS")
+            try model.save(c, password: "fixturePASSvalue42")
+            model.connect(c)
+            let session = model.manager.session(c.id)
+            try require(spin(15) { session.state == .connected && fixture.dns.published.count == 1 }, "DNS não publicado: \(session.logs.suffix(3))")
+            let value = fixture.dns.published.values.first ?? [:]
+            try require(value["ServerAddresses"] as? [String] == ["10.9.0.53"] && value["SupplementalMatchDomains"] as? [String] == ["corp.invalid", "lab.invalid"],
+                        "DNS publicado inesperado: \(value)")
+            try require(spin(5) { session.logs.contains { $0.contains("DNS da VPN (10.9.0.53) para corp.invalid, lab.invalid") } }, "DNS não registrado no log")
+            model.manager.disconnect(c.id)
+            try require(spin(15) { session.state == .disconnected }, "Não desconectou")
+            try require(spin(5) { fixture.dns.published.isEmpty }, "DNS ficou no sistema após desconectar")
+            // A resolver left by an earlier helper process is removed at the next start.
+            let leftover = FakeSupplementalDNS()
+            _ = leftover.set(token: UUID().uuidString, value: ["ServerAddresses": ["10.0.0.1"]])
+            let restarted = try HelperFixture(listenerRequirement: nil, delegateRequirement: nil, dns: leftover)
+            defer { restarted.tearDown() }
+            try require(spin(5) { leftover.published.isEmpty && leftover.flushes == 1 }, "DNS antigo não removido ao iniciar")
+        }
+
+        test("Certificado do cliente: arquivos 0600 do helper durante a sessão, senha da chave fora dos logs, removidos ao desconectar") {
+            guard let fixture = sharedFixture else { throw TestSupport.Failure("Fixture indisponível") }
+            let (model, _, _) = try endToEnd(fixture, "client-cert")
+            defer { model.manager.disconnectAll(); _ = spin(15) { fixture.core.sessionCount == 0 } }
+            var c = profile("Cert")
+            c.clientCertificate = ClientCertificateReference(sha1: ClientCertificateTests.fixtureSHA1, name: "fixture")
+            try model.save(c, password: "fixturePASSvalue42")
+            model.manager.certificateExporter = { _ in ClientCertificateTests.stub }
+            model.connect(c)
+            let session = model.manager.session(c.id)
+            try require(spin(15) { session.state == .connected }, "Não conectou com certificado: \(session.logs.suffix(3))")
+            guard let line = session.logs.first(where: { $0.hasPrefix("CERTFILES=") }) else { throw TestSupport.Failure("Certificado não chegou ao cliente") }
+            let parts = line.dropFirst("CERTFILES=".count).split(separator: " ").map(String.init)
+            try require(parts.count >= 4 && parts[0].hasPrefix(fixture.store.clientCertificates + "/") && parts[2] == "600"
+                        && line.contains("-----BEGIN CERTIFICATE----- -----BEGIN ENCRYPTED PRIVATE KEY-----"), "Arquivos inesperados: \(line)")
+            try require(FileManager.default.fileExists(atPath: parts[0]) && FileManager.default.fileExists(atPath: parts[1]), "Arquivos sumiram durante a sessão")
+            try require(!session.logs.joined().contains(ClientCertificateTests.passphrase), "Senha da chave nos logs")
+            model.manager.disconnect(c.id)
+            try require(spin(15) { session.state == .disconnected }, "Não desconectou")
+            try require(spin(5) { (try? FileManager.default.contentsOfDirectory(atPath: fixture.store.clientCertificates))?.isEmpty == true },
+                        "Arquivos do certificado ficaram no helper")
         }
 
         test("Segredos: senha e cookie fora de argv, ambiente, logs e arquivos; ambiente e descritores reduzidos") {

@@ -209,6 +209,8 @@ final class WireGuardTunnel: SessionObserver {
     var emit: (String) -> Void = { _ in }
     /// Asks the session to stop after a setup failure.
     var fail: () -> Void = {}
+    /// Called once the tunnel is configured (addresses, routes and its own DNS).
+    var ready: () -> Void = {}
     var interval: TimeInterval = 3
     var handshakeWarning: TimeInterval = 30
     /// Bounded waits for wireguard-go to create the interface and its UAPI socket.
@@ -230,6 +232,8 @@ final class WireGuardTunnel: SessionObserver {
     /// One tunnel at a time may own the system DNS.
     private static let dnsLock = NSLock()
     private static var dnsOwner: String?
+    /// A WireGuard profile currently owns the system DNS (see InternetDNS).
+    static var dnsOwned: Bool { dnsLock.withLock { dnsOwner != nil } }
 
     init(token: String, profile: WireGuardProfile, host: WireGuardHost, nameFile: String, recordPath: String) {
         self.token = token; self.profile = profile; self.host = host
@@ -295,6 +299,7 @@ final class WireGuardTunnel: SessionObserver {
         guard !isEnded else { return }
         configuredAt = Date()
         emit("\(WireGuardMarkers.ready) em \(interface).")
+        ready()
         startMonitor(interface)
     }
 

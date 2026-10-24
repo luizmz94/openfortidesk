@@ -137,6 +137,10 @@ public final class RuntimeStore {
     public var registryPath: String { root + "/sessions.json" }
     /// What WireGuard sessions changed outside their interface (routes, DNS), until undone.
     public var wireGuardRecords: String { root + "/wireguard" }
+    /// Client certificate files of running openfortivpn sessions (<token>.crt / <token>.key).
+    public var clientCertificates: String { root + "/client-cert" }
+    /// Previous DNS of the primary service while the "DNS da internet" is applied.
+    public var internetDNSRecord: String { root + "/internet-dns.json" }
 
     // MARK: State
 
@@ -146,6 +150,7 @@ public final class RuntimeStore {
         try SecureFile.makeDirectory(supervisors, mode: 0o755)
         try SecureFile.makeDirectory(work, mode: 0o700)
         try SecureFile.makeDirectory(wireGuardRecords, mode: 0o700)
+        try SecureFile.makeDirectory(clientCertificates, mode: 0o700)
         try ownership.verifyChain(work)
         // Leftovers of a crash between create and unlink. Only the helper's own names.
         for entry in (try? FileManager.default.contentsOfDirectory(atPath: work)) ?? [] where entry.hasPrefix("cfg.") || entry.hasPrefix("wg.") {
@@ -370,8 +375,45 @@ public final class RuntimeStore {
     /// Removes only the helper's own managed files (runtime copies, supervisor copy,
     /// state and work directory). Nothing outside `root` is touched.
     public func removeAll() {
-        for path in [runtimes, supervisors, work, wireGuardRecords, statePath, registryPath] { SecureFile.removeTree(path) }
+        for path in [runtimes, supervisors, work, wireGuardRecords, clientCertificates, internetDNSRecord, statePath, registryPath] { SecureFile.removeTree(path) }
         rmdir(root)
+    }
+
+    // MARK: Client certificates
+
+    /// Writes one session's certificate chain and encrypted key (mode 0600, root only).
+    /// openfortivpn opens them by path on every TLS connection of the session (login,
+    /// tunnel, logout), so they stay until the session ends.
+    public func writeClientCertificate(_ certificate: ClientCertificate, token: String) throws -> ClientCertificateFiles {
+        guard UUID(uuidString: token) != nil else { throw HelperFailure(.internalError, "Sessão inválida.") }
+        try prepareDirectories()
+        try ownership.verifyChain(clientCertificates)
+        let paths = clientCertificatePaths(token)
+        do {
+            try SecureFile.create(paths.certificate, data: Data(certificate.certificate.utf8), mode: 0o600)
+            try SecureFile.create(paths.key, data: Data(certificate.key.utf8), mode: 0o600)
+        } catch {
+            removeClientCertificate(token: token)
+            throw error
+        }
+        return ClientCertificateFiles(certificatePath: paths.certificate, keyPath: paths.key, passphrase: certificate.passphrase)
+    }
+
+    public func removeClientCertificate(token: String) {
+        let paths = clientCertificatePaths(token)
+        unlink(paths.certificate); unlink(paths.key)
+    }
+
+    /// Leftovers of sessions that are gone (helper crash or restart).
+    public func sweepClientCertificates(keeping live: Set<String>) {
+        for entry in (try? FileManager.default.contentsOfDirectory(atPath: clientCertificates)) ?? [] {
+            let token = (entry as NSString).deletingPathExtension
+            if !live.contains(token) { unlink(clientCertificates + "/" + entry) }
+        }
+    }
+
+    private func clientCertificatePaths(_ token: String) -> (certificate: String, key: String) {
+        (clientCertificates + "/\(token).crt", clientCertificates + "/\(token).key")
     }
 
     // MARK: Supervisor

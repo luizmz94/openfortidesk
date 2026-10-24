@@ -2,6 +2,36 @@
 
 ## 0.5.0-rc.1 — unreleased
 
+- **DNS da internet** (Configurações › Geral › Rede): 1.1.1.1 - Cloudflare (default),
+  8.8.8.8 - Google, 94.140.14.14 - AdGuard, entries of your own (**Adicionar mais…**, a
+  name and up to 4 addresses) or **Não alterar o DNS**. While a Fortinet VPN, or a
+  WireGuard profile without its own DNS, is connected, the service puts those servers on
+  the primary network service (no password: the service already runs as root), applies
+  them again after network changes and restores the previous DNS when the last such VPN
+  disconnects (or at the next helper start after a crash). Internal names keep resolving
+  through each Fortinet VPN's per-domain DNS; OpenVPN and WireGuard profiles with DNS keep
+  their own. Helper protocol 6.
+- Fortinet client certificates. The editor lists the certificates with a private key in
+  the Keychain (TLS client use only) and imports a `.p12`/`.pfx` into the login keychain
+  (its password is used only for the import). On each connection the app exports the
+  key as encrypted PKCS#8 under a random passphrase; the helper writes the certificate
+  and the key into a root-only directory (0600), passes `user-cert`/`user-key`/
+  `pem-passphrase` to openfortivpn and removes the files when the session ends (or on
+  the next helper start). macOS may ask once to let TunnelMac use the key.
+- The Fortinet **Servidor** field takes the gateway like FortiClient does —
+  `vpn.exemplo.com`, `vpn.exemplo.com:10443` or `vpn.exemplo.com:443/realm` — and the
+  separate Porta field is gone. Port 443 is used when omitted; a `/realm` becomes
+  openfortivpn's `realm`. Lists show the port only when it is not 443.
+- Fortinet DNS now works in apps, not only in `nslookup`. On macOS openfortivpn only
+  edits `/etc/resolv.conf`, which the system resolver ignores. The helper reads the
+  gateway's DNS servers and domains (`Got addresses: … ns […] ns_suffix […]`) and, while
+  the tunnel is up, publishes a per-domain resolver (`SupplementalMatchDomains`): names
+  under those domains use the VPN's DNS, everything else keeps the current DNS, and
+  several Fortinet VPNs can be connected at once. Removed when openfortivpn exits, or by
+  the next helper start. **Atualizar serviço** is also offered when the registered helper
+  speaks another protocol.
+- Helper protocol 5 (client certificate and realm in the request): use **Atualizar
+  serviço** after installing.
 - WireGuard support next to Fortinet and OpenVPN. **+** (⌘N) → **WireGuard** imports
   the `.conf` exported by a WireGuard server (the wg-quick format: one `[Interface]`
   with `PrivateKey`/`Address`/`DNS`/`MTU`, one or more `[Peer]`). The normalized profile,
