@@ -3,13 +3,16 @@
 //
 // Usage: VPNSupervisor [--cookie-fd] <client> [client arguments...]   (openfortivpn)
 //        VPNSupervisor --openvpn <client>                              (openvpn, no other argument)
+//        VPNSupervisor --wireguard <client>                            (wireguard-go, no other argument)
 //   fd 0      control channel: "STOP\n" or EOF requests a normal stop
 //   fd 1, 2   output channel (the same socket as fd 0)
 //   fd 3      protected configuration: an already-unlinked regular file, mode 0600
 //   fd 4      with --cookie-fd: SAML session cookie, read once and validated
 // The helper builds the client arguments itself; secrets never travel in argv/env.
 // openfortivpn reads fd 3 with "-c /dev/fd/3"; openvpn with "--config /dev/fd/3", where the
-// helper has already inlined key material and credentials.
+// helper has already inlined key material and credentials. wireguard-go runs in the
+// foreground on a new utun ("-f utun") and never sees fd 3: the helper sends its keys over
+// the root-only UAPI socket and configures addresses, routes and DNS itself.
 #define __STDC_WANT_LIB_EXT1__ 1 // memset_s
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -102,7 +105,7 @@ static int load_cookie(int *descriptor) {
 }
 
 int main(int argc, char **argv) {
-    int use_cookie = 0, openvpn = 0;
+    int use_cookie = 0, openvpn = 0, wireguard = 0;
     if (argc >= 2 && strcmp(argv[1], "--cookie-fd") == 0) {
         use_cookie = 1;
         argv += 1; argc -= 1;
@@ -111,6 +114,11 @@ int main(int argc, char **argv) {
         argv += 1; argc -= 1;
         // Everything else is in the protected configuration.
         if (argc != 2) { errno = EINVAL; return fail("argumentos inválidos para openvpn"); }
+    } else if (argc >= 2 && strcmp(argv[1], "--wireguard") == 0) {
+        wireguard = 1;
+        argv += 1; argc -= 1;
+        // The interface is always a new utun; the configuration arrives over UAPI.
+        if (argc != 2) { errno = EINVAL; return fail("argumentos inválidos para wireguard-go"); }
     }
     if (argc < 2 || argv[1][0] != '/') { errno = EINVAL; return fail("argumentos inválidos"); }
     for (int i = 2; i < argc; ++i) {
@@ -138,8 +146,13 @@ int main(int argc, char **argv) {
     arguments[position++] = argv[1];
     for (int i = 2; i < argc; ++i) arguments[position++] = argv[i];
     if (cookie >= 0) arguments[position++] = "--cookie-on-stdin";
-    arguments[position++] = openvpn ? "--config" : "-c";
-    arguments[position++] = "/dev/fd/3";
+    if (wireguard) {
+        arguments[position++] = "-f";
+        arguments[position++] = "utun";
+    } else {
+        arguments[position++] = openvpn ? "--config" : "-c";
+        arguments[position++] = "/dev/fd/3";
+    }
     arguments[position] = NULL;
 
     pid_t child = fork();
@@ -152,7 +165,8 @@ int main(int argc, char **argv) {
         signal(SIGHUP, SIG_DFL);
         signal(SIGPIPE, SIG_DFL);
         if (interrupted) _exit(143);
-        if (fcntl(CONFIG_FD, F_SETFD, 0) < 0) _exit(125);
+        if (wireguard) close(CONFIG_FD); // Nothing for wireguard-go to read there.
+        else if (fcntl(CONFIG_FD, F_SETFD, 0) < 0) _exit(125);
         if (dup2(STDOUT_FILENO, STDERR_FILENO) < 0) _exit(125);
         // pppd checks the real UID, unlike openfortivpn's EUID check. A launchd daemon
         // already runs with every ID at 0; normalize anyway and verify before exec.

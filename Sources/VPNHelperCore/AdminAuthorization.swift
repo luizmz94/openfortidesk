@@ -35,7 +35,7 @@ public final class SystemAdminAuthorizer: AdminAuthorizing {
         guard AuthorizationCreate(nil, nil, [], &own) == errAuthorizationSuccess, let own else { return false }
         defer { AuthorizationFree(own, []) }
         let set = AuthorizationRightSet(own, HelperConstants.authorizationRight, Self.rule as CFString,
-                                        "TunnelMac quer aprovar ou remover a cópia protegida de um cliente VPN (openfortivpn ou OpenVPN)." as CFString, nil, nil)
+                                        "TunnelMac quer aprovar ou remover a cópia protegida de um cliente VPN (openfortivpn, OpenVPN ou wireguard-go)." as CFString, nil, nil)
         guard set == errAuthorizationSuccess else { return false }
         var verified: CFDictionary?
         return AuthorizationRightGet(HelperConstants.authorizationRight, &verified) == errAuthorizationSuccess

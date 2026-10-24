@@ -100,6 +100,19 @@ enum UIPreviewTests {
             var bothStatus = HelperTests.readyStatus()
             bothStatus.openVPNRuntime = RuntimeSummary(id: "ovpn", version: "2.7.8", approvedAt: Date(), capabilities: RuntimeCapabilities(help: ""),
                                                        sourcePath: "/opt/homebrew/Cellar/openvpn/2.7.8_1/sbin/openvpn", sourceSHA256: "0")
+            let wireGuardImport = try WireGuardImporter.importText(WireGuardTests.fullTunnel, suggestedName: "Casa WireGuard", source: "~/Downloads/MacOS.conf")
+            var wireGuardWarned = wireGuardImport
+            wireGuardWarned.warnings = ["PostUp removido: comandos executados como root pelo wg-quick; o TunnelMac não executa scripts do perfil.",
+                                        "O arquivo original MacOS.conf contém a chave privada e pode ser lido por outros usuários do Mac (recomendado: apagá-lo ou chmod 600). A cópia do app é privada."]
+            let wireGuard = Connection(name: "Casa WireGuard", kind: .wireguard, wireGuard: wireGuardImport.summary)
+            created.append(wireGuard.id)
+            let wireGuardSession = model.manager.session(wireGuard.id)
+            defer { wireGuardSession.state = .disconnected; wireGuardSession.connectedAt = nil }
+            wireGuardSession.state = .connected
+            wireGuardSession.connectedAt = Date().addingTimeInterval(-421)
+            wireGuardSession.logs = ["[+] Interface do WireGuard: utun8", "[#] ifconfig utun8 inet 10.8.0.3/32 10.8.0.3 alias",
+                                     "[#] route -q -n add -inet 0.0.0.0/1 -interface utun8", "\(WireGuardMarkers.ready) em utun8.",
+                                     "\(WireGuardMarkers.handshake) com 203.0.113.10:51820."]
             let bothService = ServiceController(policy: .unavailable(reason: "verificações locais"), registrar: nil, client: nil)
             bothService.useForLocalChecks(status: bothStatus)
             let bothModel = AppModel(store: try JSONStore(directory: root.appendingPathComponent("both")), passwords: passwords, service: bothService)
@@ -157,17 +170,22 @@ enum UIPreviewTests {
                 try render(ServicePanel(model: unavailableModel).padding(20), NSSize(width: 620, height: 360), "service-panel")
                 try render(ServiceStatusRow(service: model.service) {}, NSSize(width: 300, height: 56), "service-row")
                 try render(ConnectionEditor(model: model, connection: openVPN, pendingImport: imported, saved: {}), NSSize(width: 560, height: 640), "editor-openvpn-import")
-                try render(ConnectionEditor(model: model, connection: Connection(), saved: {}), NSSize(width: 560, height: 420), "editor-choose-type")
+                try render(ConnectionEditor(model: model, connection: Connection(), saved: {}), NSSize(width: 560, height: 520), "editor-choose-type")
+                try render(ConnectionEditor(model: model, connection: wireGuard, pendingWireGuard: wireGuardWarned, saved: {}),
+                           NSSize(width: 560, height: 640), "editor-wireguard-import")
+                try render(ConnectionDetail(connection: wireGuard, session: wireGuardSession, model: model, edit: {}, delete: {}),
+                           NSSize(width: 640, height: 560), "detail-wireguard-connected")
                 try render(ConnectionDetail(connection: openVPN, session: openVPNSession, model: model, edit: {}, delete: {}),
                            NSSize(width: 640, height: 560), "detail-openvpn-digest")
                 let versions = ClientVersionChecker(transport: DisabledUpdateTransport())
                 versions.setForChecks(local: [.openvpn: .init(path: "/opt/homebrew/sbin/openvpn", exists: true, version: "2.7.8", sourceChanged: false),
-                                              .openfortivpn: .init(path: "/opt/homebrew/bin/openfortivpn", exists: true, version: "1.24.1", sourceChanged: false)],
-                                      latest: [.openvpn: "2.7.10", .openfortivpn: "1.24.1"])
-                try render(ServicePanel(model: bothModel, versions: versions).padding(20), NSSize(width: 620, height: 520), "service-panel-both")
+                                              .openfortivpn: .init(path: "/opt/homebrew/bin/openfortivpn", exists: true, version: "1.24.1", sourceChanged: false),
+                                              .wireguard: .init(path: "/opt/homebrew/bin/wireguard-go", exists: true, version: "0.0.20250522", sourceChanged: false)],
+                                      latest: [.openvpn: "2.7.10", .openfortivpn: "1.24.1", .wireguard: "0.0.20250522"])
+                try render(ServicePanel(model: bothModel, versions: versions).padding(20), NSSize(width: 620, height: 600), "service-panel-both")
             }
             let files = try FileManager.default.contentsOfDirectory(atPath: output.path).filter { $0.hasSuffix(".png") }
-            try require(files.count == 36, "Renders esperados: 36, gerados: \(files.count)")
+            try require(files.count == 40, "Renders esperados: 40, gerados: \(files.count)")
         }
         return failures
     }

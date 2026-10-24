@@ -126,13 +126,16 @@ final class Session: ObservableObject, Identifiable {
     var reachedGateway = false
     var tunnelUp = false
     var tunnelHandled = false
+    /// The service could not configure a WireGuard tunnel (keys, addresses, routes):
+    /// the session ends as a failure even though wireguard-go exits normally.
+    var setupFailed = false
     init(id: UUID) { self.id = id }
     func log(_ text: String) {
         logs.append(OutputRules.safe(text, secret: secret))
         if logs.count > 1500 { logs.removeFirst(logs.count - 1500) }
     }
     func clearLogs() { logs.removeAll(keepingCapacity: true) }
-    func begin(retrying: Bool = false, client: String = "openfortivpn") {
+    func begin(retrying: Bool = false, client: String = "openfortivpn", routedBy: String? = nil) {
         reconnectTask?.cancel(); reconnectTask = nil
         if !retrying { wasConnected = false; reconnectAttempts = 0 }
         connectedAt = nil
@@ -156,7 +159,24 @@ final class Session: ObservableObject, Identifiable {
         tunnelUp = false
         tunnelHandled = false
         digestFix = nil
-        log("Iniciando conexão. Rotas e DNS serão tratados pelo \(client); redes sobrepostas podem gerar conflitos.")
+        setupFailed = false
+        log("Iniciando conexão. Rotas e DNS serão tratados \(routedBy ?? "pelo \(client)"); redes sobrepostas podem gerar conflitos.")
+    }
+    /// wireguard-go (verbose) plus the lines the service adds while it configures the tunnel.
+    /// WireGuard has no connection to wait for: the tunnel is up once it is configured; the
+    /// first handshake is only logged. wireguard-go keeps re-sending handshakes by itself.
+    func acceptWireGuard(_ line: String) {
+        if line.hasPrefix(WireGuardMarkers.failure) {
+            setupFailed = true
+            retryBlocked = true
+        }
+        if line.hasPrefix(WireGuardMarkers.ready) && !wantsDisconnect {
+            if connectedAt == nil { connectedAt = Date() }
+            wasConnected = true
+            tunnelUp = true
+            state = .connected
+        }
+        log(line)
     }
     /// OpenVPN 2.7 messages (verb 3). openvpn reconnects internally (ping-restart, retries);
     /// the app only marks the state and blocks its own retry after credential/config errors.
@@ -194,6 +214,7 @@ final class Session: ObservableObject, Identifiable {
     }
     func accept(_ line: String, connection: Connection, openBrowser: (URL) -> Void) {
         if connection.isOpenVPN { acceptOpenVPN(line); return }
+        if connection.isWireGuard { acceptWireGuard(line); return }
         if line.range(of: #"(?i)^ERROR:.*(?:certificate|\bTLS\b|\bSSL\b|authenticate|SAML|No password|No cookie|\bOTP\b)"#, options: .regularExpression) != nil {
             retryBlocked = true
         }
@@ -230,9 +251,9 @@ final class Session: ObservableObject, Identifiable {
         if let connectedAt, Date().timeIntervalSince(connectedAt) >= 60 { reconnectAttempts = 0 }
         connectedAt = nil
         if let error { log(error) }
-        if wantsDisconnect && exit != nil {
+        if wantsDisconnect && exit != nil && !setupFailed {
             state = .disconnected
-        } else if exit == 0 && error == nil { state = .disconnected }
+        } else if exit == 0 && error == nil && !setupFailed { state = .disconnected }
         else { state = .failed }
         if let exit { log("Processo encerrado (código \(exit)).") }
         pid = nil
@@ -266,6 +287,7 @@ final class VPNManager: ObservableObject {
         var help: String
         var launched: (Session, ConnectionRequest, LaunchPlan) -> Void
         var openVPNLaunched: ((Session, OpenVPNRequest) -> Void)? = nil
+        var wireGuardLaunched: ((Session, WireGuardRequest) -> Void)? = nil
     }
     var harness: LaunchHarness?
     var changed: (() -> Void)?
@@ -277,13 +299,22 @@ final class VPNManager: ObservableObject {
         sessions[id] = session
         return session
     }
-    func connect(_ connection: Connection, password: String?, retrying: Bool = false, openVPNProfile: String? = nil) {
+    /// `profile` is the saved OpenVPN or WireGuard profile of the connection.
+    func connect(_ connection: Connection, password: String?, retrying: Bool = false, profile: String? = nil) {
         let session = session(connection.id)
         guard !session.state.active || (retrying && session.state == .reconnecting) else { return }
-        session.begin(retrying: retrying, client: connection.isOpenVPN ? "OpenVPN" : "openfortivpn")
+        switch connection.kind {
+        case .fortinet: session.begin(retrying: retrying, client: "openfortivpn")
+        case .openvpn: session.begin(retrying: retrying, client: "OpenVPN")
+        case .wireguard: session.begin(retrying: retrying, client: "WireGuard", routedBy: "pelo serviço do TunnelMac, a partir do perfil WireGuard")
+        }
         session.secret = password
         if connection.isOpenVPN {
-            startOpenVPN(session, connection: connection, password: password, profile: openVPNProfile)
+            startOpenVPN(session, connection: connection, password: password, profile: profile)
+            return
+        }
+        if connection.isWireGuard {
+            startWireGuard(session, connection: connection, profile: profile)
             return
         }
         cookieAttempts.removeValue(forKey: connection.id)
@@ -394,6 +425,27 @@ final class VPNManager: ObservableObject {
         guard let transport else { end(session, exit: nil, error: "Serviço privilegiado indisponível."); return }
         launch(session, plan: LaunchPlan(clientArguments: [], mode: .none)) { completion in
             transport.startOpenVPN(request, completion: completion)
+        }
+    }
+    private func startWireGuard(_ session: Session, connection: Connection, profile: String?) {
+        session.state = .authorizing
+        changed?()
+        if harness == nil {
+            guard let transport else { end(session, exit: nil, error: "Serviço privilegiado indisponível."); return }
+            if let reason = transport.unavailableReason(for: .wireguard) { end(session, exit: nil, error: reason); return }
+        }
+        if session.wantsDisconnect { end(session, exit: 0); return }
+        let request: WireGuardRequest
+        do {
+            let c = try connection.validated()
+            guard let profile else { throw AppFailure("Perfil WireGuard indisponível; importe-o novamente.") }
+            request = WireGuardRequest(connectionID: c.id, profile: profile)
+        } catch { end(session, exit: nil, error: error.localizedDescription); return }
+        running[session.id] = connection
+        if let harness { harness.wireGuardLaunched?(session, request); return }
+        guard let transport else { end(session, exit: nil, error: "Serviço privilegiado indisponível."); return }
+        launch(session, plan: LaunchPlan(clientArguments: [], mode: .none)) { completion in
+            transport.startWireGuard(request, completion: completion)
         }
     }
     private func launch(_ session: Session, request: ConnectionRequest, plan: LaunchPlan) {

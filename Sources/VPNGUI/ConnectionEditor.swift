@@ -18,11 +18,43 @@ enum OpenVPNImportPanel {
     }
 }
 
+/// Open panel for a WireGuard configuration (.conf exported by the server or wg-quick).
+enum WireGuardImportPanel {
+    @MainActor static func choose() -> [URL]? {
+        let panel = NSOpenPanel()
+        panel.title = "Importar perfil WireGuard"
+        panel.message = "Escolha o arquivo .conf do WireGuard. O original não é alterado; comandos PostUp/PreDown nunca são executados."
+        panel.prompt = "Importar"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        return panel.runModal() == .OK && !panel.urls.isEmpty ? panel.urls : nil
+    }
+}
+
+/// Original files of a saved import that may go to the Trash (asked once, after saving).
+struct ImportCleanup: Equatable {
+    var files: [URL]
+    /// A .visc folder whose every visible entry was used: trashed as a whole.
+    var folder: URL?
+    var holdsPrivateKey = false
+    var names: [String] { folder.map { [$0.lastPathComponent + " (pasta inteira)"] } ?? files.map(\.lastPathComponent) }
+    func trash() -> [String] {
+        var failed: [String] = []
+        for url in folder.map({ [$0] }) ?? files {
+            do { try FileManager.default.trashItem(at: url, resultingItemURL: nil) }
+            catch { failed.append(url.lastPathComponent) }
+        }
+        return failed
+    }
+}
+
 struct ConnectionEditor: View {
     @ObservedObject var model: AppModel
     @State var connection: Connection
     /// A profile just read from disk (new import or replacement); saved only on Adicionar/Salvar.
     @State var pendingImport: OpenVPNImport?
+    @State var pendingWireGuard: WireGuardImport?
     var saved: () -> Void
     @State private var password = ""
     @State private var portText = ""
@@ -34,17 +66,20 @@ struct ConnectionEditor: View {
     @State private var savedProfile: OpenVPNProfile?
     @State private var dropTargeted = false
     /// Saved import whose originals may now go to the Trash (asked once, after saving).
-    @State private var cleanup: OpenVPNImport?
+    @State private var cleanup: ImportCleanup?
     @FocusState private var focus: Field?
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(model: AppModel, connection: Connection, pendingImport: OpenVPNImport? = nil, saved: @escaping () -> Void) {
+    init(model: AppModel, connection: Connection, pendingImport: OpenVPNImport? = nil, pendingWireGuard: WireGuardImport? = nil,
+         saved: @escaping () -> Void) {
         _model = ObservedObject(wrappedValue: model)
         _connection = State(initialValue: connection)
         _pendingImport = State(initialValue: pendingImport)
+        _pendingWireGuard = State(initialValue: pendingWireGuard)
         // A blank new cadastro starts by choosing the VPN type.
-        let blank = connection.name.isEmpty && pendingImport == nil && !model.data.connections.contains { $0.id == connection.id }
+        let blank = connection.name.isEmpty && pendingImport == nil && pendingWireGuard == nil
+            && !model.data.connections.contains { $0.id == connection.id }
         _step = State(initialValue: blank ? .chooseKind : .form)
         self.saved = saved
     }
@@ -75,6 +110,9 @@ struct ConnectionEditor: View {
                 ProtocolCard(kind: .openvpn, title: "OpenVPN",
                              subtitle: "Perfil .ovpn ou pasta .visc do Viscosity. Certificados e chaves ficam guardados junto com a conexão.",
                              status: clientStatus(.openvpn)) { choose(.openvpn) }
+                ProtocolCard(kind: .wireguard, title: "WireGuard",
+                             subtitle: "Arquivo .conf do servidor ou do app WireGuard. A chave privada fica guardada junto com a conexão.",
+                             status: clientStatus(.wireguard)) { choose(.wireguard) }
             }
             .padding(.horizontal, 22).padding(.vertical, 16)
             Spacer(minLength: 0)
@@ -83,7 +121,7 @@ struct ConnectionEditor: View {
                 Button("Cancelar") { dismiss() }.keyboardShortcut(.cancelAction)
             }
         }
-        .frame(width: 560, height: 420)
+        .frame(width: 560, height: 520)
     }
 
     private func clientStatus(_ kind: VPNProtocol) -> String {
@@ -95,41 +133,50 @@ struct ConnectionEditor: View {
     private func choose(_ kind: VPNProtocol) {
         connection.kind = kind
         error = nil
-        if kind == .openvpn { step = .chooseFiles } else { step = .form; loaded = true; focus = .name }
+        if kind == .fortinet { step = .form; loaded = true; focus = .name } else { step = .chooseFiles }
     }
 
-    // MARK: Step 2 — OpenVPN files
+    // MARK: Step 2 — profile files
 
     private var fileChooser: some View {
-        VStack(spacing: 0) {
-            SheetHeader(symbol: "doc.badge.gearshape", tone: .neutral, title: "Importar perfil OpenVPN", subtitle: "OpenVPN")
+        let kind = connection.kind
+        let wireGuard = kind == .wireguard
+        return VStack(spacing: 0) {
+            SheetHeader(symbol: "doc.badge.gearshape", tone: .neutral, title: "Importar perfil \(kind.title)", subtitle: kind.title)
                 .padding(.horizontal, 22).padding(.top, 20).padding(.bottom, 4)
             VStack(alignment: .leading, spacing: 16) {
                 VStack(spacing: 10) {
-                    ProtocolIcon(kind: .openvpn, size: 40)
-                    Text("Arraste o perfil e os certificados para cá").font(.headline)
-                    Button("Escolher arquivos…") { if let urls = OpenVPNImportPanel.choose() { importFiles(urls) } }
+                    ProtocolIcon(kind: kind, size: 40)
+                    Text(wireGuard ? "Arraste o arquivo .conf para cá" : "Arraste o perfil e os certificados para cá").font(.headline)
+                    Button(wireGuard ? "Escolher arquivo…" : "Escolher arquivos…") { chooseFiles() }
                         .adaptiveButtonStyle(prominent: true)
                         .keyboardShortcut(.defaultAction)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 22)
                 .background(RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(VPNProtocol.openvpn.brandColor.opacity(dropTargeted ? 0.14 : 0.05)))
+                    .fill(kind.brandColor.opacity(dropTargeted ? 0.14 : 0.05)))
                 .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .strokeBorder(style: StrokeStyle(lineWidth: dropTargeted ? 2 : 1, dash: [6, 4]))
-                    .foregroundStyle(dropTargeted ? VPNProtocol.openvpn.brandColor : Color.secondary.opacity(0.5)))
+                    .foregroundStyle(dropTargeted ? kind.brandColor : Color.secondary.opacity(0.5)))
                 .onDrop(of: [UTType.fileURL], isTargeted: $dropTargeted) { providers in
                     receive(providers); return true
                 }
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Aceita").font(.callout.weight(.semibold))
-                    Label("Um .ovpn ou .conf com os certificados embutidos", systemImage: "doc.text")
-                    Label("Uma pasta .visc do Viscosity", systemImage: "folder")
-                    Label("O .ovpn junto com ca, cert, key e ta, selecionados de uma vez", systemImage: "doc.on.doc")
+                    if wireGuard {
+                        Label("O .conf exportado pelo servidor WireGuard (o mesmo do wg-quick)", systemImage: "doc.text")
+                        Label("Um [Interface] com PrivateKey e Address, e um ou mais [Peer]", systemImage: "point.3.connected.trianglepath.dotted")
+                    } else {
+                        Label("Um .ovpn ou .conf com os certificados embutidos", systemImage: "doc.text")
+                        Label("Uma pasta .visc do Viscosity", systemImage: "folder")
+                        Label("O .ovpn junto com ca, cert, key e ta, selecionados de uma vez", systemImage: "doc.on.doc")
+                    }
                 }
                 .font(.callout)
-                Text("Certificados e chaves são copiados para um perfil privado do app, que só o seu usuário do macOS lê. Os arquivos originais não são alterados e podem ser apagados depois.")
+                Text(wireGuard
+                     ? "A chave privada é copiada para um perfil privado do app, que só o seu usuário do macOS lê. Comandos PostUp/PreDown do arquivo nunca são executados. O original não é alterado e pode ser apagado depois."
+                     : "Certificados e chaves são copiados para um perfil privado do app, que só o seu usuário do macOS lê. Os arquivos originais não são alterados e podem ser apagados depois.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             .padding(.horizontal, 22).padding(.vertical, 14)
@@ -161,7 +208,13 @@ struct ConnectionEditor: View {
         group.notify(queue: .main) { if !urls.isEmpty { importFiles(urls) } }
     }
 
+    private func chooseFiles() {
+        let urls = connection.isWireGuard ? WireGuardImportPanel.choose() : OpenVPNImportPanel.choose()
+        if let urls { importFiles(urls) }
+    }
+
     private func importFiles(_ urls: [URL]) {
+        if connection.isWireGuard { importWireGuard(urls); return }
         do {
             let imported = try OpenVPNImporter.load(urls)
             pendingImport = imported
@@ -173,6 +226,19 @@ struct ConnectionEditor: View {
             if connection.username.isEmpty { connection.username = imported.username }
             // After the username change has reset the field (see onChange below).
             if !imported.password.isEmpty { DispatchQueue.main.async { password = imported.password } }
+            error = nil
+            loaded = true
+            step = .form
+        } catch { self.error = error.localizedDescription }
+    }
+
+    private func importWireGuard(_ urls: [URL]) {
+        do {
+            let imported = try WireGuardImporter.load(urls)
+            pendingWireGuard = imported
+            connection.kind = .wireguard
+            connection.wireGuard = imported.summary
+            if connection.name.isEmpty { connection.name = imported.name }
             error = nil
             loaded = true
             step = .form
@@ -193,17 +259,17 @@ struct ConnectionEditor: View {
 
     private var cleanupMessage: String {
         guard let cleanup else { return "" }
-        let names = cleanup.sourceFolder.map { [$0.lastPathComponent + " (pasta inteira)"] } ?? cleanup.sourceFiles.map(\.lastPathComponent)
-        return "O perfil, os certificados e as chaves já estão guardados na pasta privada do app, que só o seu usuário lê. Os originais não são mais necessários:\n\n"
-            + names.joined(separator: "\n")
-            + "\n\nEles vão para a Lixeira; esvazie-a para apagá-los de vez."
+        let intro = cleanup.holdsPrivateKey
+            ? "O perfil e a chave privada já estão guardados na pasta privada do app, que só o seu usuário lê. O original não é mais necessário e, enquanto existir, a chave privada fica nele:\n\n"
+            : "O perfil, os certificados e as chaves já estão guardados na pasta privada do app, que só o seu usuário lê. Os originais não são mais necessários:\n\n"
+        return intro + cleanup.names.joined(separator: "\n") + "\n\nEles vão para a Lixeira; esvazie-a para apagá-los de vez."
     }
 
     private func finishCleanup(trash: Bool) {
         guard let pending = cleanup else { return }
         cleanup = nil
         if trash {
-            let failed = OpenVPNImporter.trashSources(of: pending)
+            let failed = pending.trash()
             if !failed.isEmpty { model.error = "Não foi possível mover para a Lixeira: \(failed.joined(separator: ", ")). A conexão foi salva normalmente." }
         }
         saved(); dismiss()
@@ -211,12 +277,16 @@ struct ConnectionEditor: View {
 
     private var formContent: some View {
         VStack(spacing: 0) {
-            SheetHeader(symbol: connection.isOpenVPN ? "doc.badge.gearshape" : "network.badge.shield.half.filled", tone: .neutral,
-                        title: isNew ? (connection.isOpenVPN ? "Importar perfil OpenVPN" : "Nova conexão") : "Editar conexão",
+            SheetHeader(symbol: connection.usesProfile ? "doc.badge.gearshape" : "network.badge.shield.half.filled", tone: .neutral,
+                        title: isNew ? (connection.usesProfile ? "Importar perfil \(connection.kind.title)" : "Nova conexão") : "Editar conexão",
                         subtitle: isNew ? connection.kind.title : "\(connection.name) · \(connection.kind.title)")
                 .padding(.horizontal, 22).padding(.top, 20).padding(.bottom, 4)
             Form {
-                if connection.isOpenVPN { openVPNSections } else { fortinetSections }
+                switch connection.kind {
+                case .fortinet: fortinetSections
+                case .openvpn: openVPNSections
+                case .wireguard: wireGuardSections
+                }
             }
             .formStyle(.grouped)
             .animation(Motion.state(reduceMotion), value: connection.authentication)
@@ -234,9 +304,9 @@ struct ConnectionEditor: View {
                     .disabled(!loaded)
             }
         }
-        .frame(width: 560, height: connection.isOpenVPN ? 640 : 600)
+        .frame(width: 560, height: connection.usesProfile ? 640 : 600)
         .animation(Motion.state(reduceMotion), value: error)
-        .onChange(of: focus) { field in if field != .server && !connection.isOpenVPN { splitServerPort() } }
+        .onChange(of: focus) { field in if field != .server && !connection.usesProfile { splitServerPort() } }
         .onAppear {
             portText = String(connection.port)
             if model.manager.session(connection.id).authenticationRejected {
@@ -246,6 +316,8 @@ struct ConnectionEditor: View {
             } else if let pendingImport, isNew {
                 password = pendingImport.password
                 loaded = true
+            } else if connection.isWireGuard {
+                loaded = true // No password: the key is in the saved profile.
             } else {
                 do { password = try model.passwords.read(connection.id) ?? ""; loaded = true }
                 catch { self.error = error.localizedDescription }
@@ -295,6 +367,55 @@ struct ConnectionEditor: View {
                 .focused($focus, equals: .certificate)
         } header: {
             Text("Certificado")
+        }
+    }
+
+    // MARK: WireGuard
+
+    private var wireGuardSummary: WireGuardSummary? { pendingWireGuard?.summary ?? connection.wireGuard }
+
+    @ViewBuilder private var wireGuardSections: some View {
+        Section("Perfil") {
+            TextField("Nome", text: $connection.name, prompt: Text("Escritório"))
+                .focused($focus, equals: .name)
+            if let summary = wireGuardSummary {
+                LabeledContent("Servidor") {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        ForEach(summary.endpoints.isEmpty ? ["Sem endpoint"] : summary.endpoints, id: \.self) { endpoint in
+                            Text(endpoint).font(.system(.callout, design: .monospaced)).textSelection(.enabled)
+                        }
+                    }
+                }
+                LabeledContent("Endereço") {
+                    Text(summary.addresses.joined(separator: ", ")).font(.system(.callout, design: .monospaced))
+                        .lineLimit(2).truncationMode(.middle).textSelection(.enabled)
+                }
+                LabeledContent("Rotas") { Text(summary.routesDescription).lineLimit(2).truncationMode(.middle).help(summary.allowedIPs.joined(separator: ", ")) }
+                LabeledContent("DNS") { Text(summary.dns.isEmpty ? "Não altera o DNS" : summary.dns.joined(separator: ", ")).lineLimit(1).truncationMode(.middle) }
+                LabeledContent("Chave pública") {
+                    Text(summary.publicKey).font(.system(.caption, design: .monospaced)).lineLimit(1).truncationMode(.middle)
+                        .textSelection(.enabled).help("Chave pública deste perfil, a que o administrador do servidor cadastra. A chave privada nunca é mostrada.")
+                }
+                if !summary.source.isEmpty {
+                    LabeledContent("Origem") {
+                        Text(summary.source).lineLimit(1).truncationMode(.middle).help(summary.source).textSelection(.enabled)
+                    }
+                }
+            }
+            HStack {
+                Text(pendingWireGuard != nil && !isNew ? "O novo perfil substituirá o atual ao salvar." : "A chave privada fica numa cópia privada do app.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Substituir perfil…") { replaceProfile() }.controlSize(.small)
+            }
+        }
+        if let warnings = wireGuardSummary?.warnings, !warnings.isEmpty {
+            Section("Avisos da importação") {
+                ForEach(warnings, id: \.self) { warning in
+                    Label { Text(warning).font(.callout).fixedSize(horizontal: false, vertical: true) }
+                        icon: { Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange) }
+                }
+            }
         }
     }
 
@@ -370,6 +491,16 @@ struct ConnectionEditor: View {
     }
 
     private func replaceProfile() {
+        if connection.isWireGuard {
+            guard let urls = WireGuardImportPanel.choose() else { return }
+            do {
+                let imported = try WireGuardImporter.load(urls)
+                pendingWireGuard = imported
+                connection.wireGuard = imported.summary
+                error = nil
+            } catch { self.error = error.localizedDescription }
+            return
+        }
         guard let urls = OpenVPNImportPanel.choose() else { return }
         do {
             let imported = try OpenVPNImporter.load(urls)
@@ -385,7 +516,14 @@ struct ConnectionEditor: View {
 
     private func save() {
         do {
-            if connection.isOpenVPN {
+            if connection.isWireGuard {
+                if let pendingWireGuard { connection.wireGuard = pendingWireGuard.summary }
+                try model.save(connection, password: "", wireGuardProfile: pendingWireGuard?.profile.text)
+                if let pendingWireGuard, !pendingWireGuard.sourceFiles.isEmpty {
+                    cleanup = ImportCleanup(files: pendingWireGuard.sourceFiles, holdsPrivateKey: true)
+                    return
+                }
+            } else if connection.isOpenVPN {
                 var profileText = pendingImport?.profileText(applyingFix: applyDigestFix)
                 if let pendingImport { connection.openVPN = pendingImport.summary }
                 if pendingImport == nil, let fix = editFix, let savedProfile,
@@ -398,7 +536,8 @@ struct ConnectionEditor: View {
                 try model.save(connection, password: summary?.requiresCredentials == true ? password : "",
                                openVPNProfile: profileText)
                 if let pendingImport, !pendingImport.sourceFiles.isEmpty {
-                    cleanup = pendingImport // The sheet closes after the answer.
+                    // The sheet closes after the answer.
+                    cleanup = ImportCleanup(files: pendingImport.sourceFiles, folder: pendingImport.sourceFolder)
                     return
                 }
             } else {

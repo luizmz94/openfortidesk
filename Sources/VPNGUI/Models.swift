@@ -28,14 +28,59 @@ extension Authentication {
 
 /// VPN protocol of a saved connection. Existing cadastros (no key) are Fortinet.
 enum VPNProtocol: String, Codable, CaseIterable, Identifiable {
-    case fortinet, openvpn
+    case fortinet, openvpn, wireguard
     var id: String { rawValue }
-    var title: String { self == .fortinet ? "Fortinet SSL VPN" : "OpenVPN" }
-    var runtime: RuntimeKind { self == .fortinet ? .openfortivpn : .openvpn }
+    var title: String {
+        switch self {
+        case .fortinet: return "Fortinet SSL VPN"
+        case .openvpn: return "OpenVPN"
+        case .wireguard: return "WireGuard"
+        }
+    }
+    var runtime: RuntimeKind {
+        switch self {
+        case .fortinet: return .openfortivpn
+        case .openvpn: return .openvpn
+        case .wireguard: return .wireguard
+        }
+    }
+}
+
+/// Original files that other macOS users can still read (they may hold private keys).
+enum ExposedFiles {
+    static func stillExposed(_ paths: [String]?) -> [String] {
+        (paths ?? []).filter { path in
+            guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+                  let mode = (attributes[.posixPermissions] as? NSNumber)?.intValue else { return false }
+            return mode & 0o077 != 0
+        }
+    }
+}
+
+/// What the app shows about an imported WireGuard profile. The profile itself (with the
+/// private key) lives in the WireGuard profile store, never in connections.json.
+struct WireGuardSummary: Codable, Equatable {
+    var endpoints: [String]
+    var addresses: [String]
+    var dns: [String]
+    var allowedIPs: [String]
+    var fullTunnel: Bool
+    /// Derived from the private key; the value the server administrator registers.
+    var publicKey: String
+    var warnings: [String] = []
+    var source: String = ""
+    var importedAt = Date()
+    var exposedOriginals: [String]?
+    var stillExposed: [String] { ExposedFiles.stillExposed(exposedOriginals) }
+    /// "Todo o tráfego" or the routed networks.
+    var routesDescription: String {
+        if fullTunnel { return "Todo o tráfego (\(allowedIPs.filter { $0.hasSuffix("/0") }.joined(separator: ", ")))" }
+        return allowedIPs.isEmpty ? "Nenhuma rota" : allowedIPs.joined(separator: ", ")
+    }
 }
 
 /// What the app shows about an imported OpenVPN profile. The profile itself (with its
-/// inline certificates and keys) lives in OpenVPNProfileStore, never in connections.json.
+/// inline certificates and keys) lives in the OpenVPN ProfileStore, never in connections.json.
 struct OpenVPNSummary: Codable, Equatable {
     var remotes: [OpenVPNRemote]
     var requiresCredentials: Bool
@@ -48,13 +93,7 @@ struct OpenVPNSummary: Codable, Equatable {
     var exposedOriginals: [String]?
 
     /// Those originals that still exist and are still readable by others.
-    var stillExposed: [String] {
-        (exposedOriginals ?? []).filter { path in
-            guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
-                  let mode = (attributes[.posixPermissions] as? NSNumber)?.intValue else { return false }
-            return mode & 0o077 != 0
-        }
-    }
+    var stillExposed: [String] { ExposedFiles.stillExposed(exposedOriginals) }
 }
 
 struct Connection: Codable, Identifiable, Equatable {
@@ -69,16 +108,30 @@ struct Connection: Codable, Identifiable, Equatable {
     var trustedCertificate = ""
     var kind: VPNProtocol = .fortinet
     var openVPN: OpenVPNSummary?
+    var wireGuard: WireGuardSummary?
 
     var isOpenVPN: Bool { kind == .openvpn }
+    var isWireGuard: Bool { kind == .wireguard }
+    /// OpenVPN and WireGuard connections come from an imported profile file.
+    var usesProfile: Bool { kind != .fortinet }
     /// Whether connecting needs the password saved in the Keychain.
-    var usesPassword: Bool { isOpenVPN ? (openVPN?.requiresCredentials ?? false) : authentication == .password }
-    /// "host:port" for Fortinet, the first remote (and how many more) for OpenVPN.
+    var usesPassword: Bool {
+        switch kind {
+        case .fortinet: return authentication == .password
+        case .openvpn: return openVPN?.requiresCredentials ?? false
+        case .wireguard: return false
+        }
+    }
+    /// "host:port" for Fortinet, the first remote/endpoint (and how many more) for the others.
     var endpoint: String {
-        guard isOpenVPN else { return "\(server):\(String(port))" }
-        let remotes = openVPN?.remotes ?? []
-        guard let first = remotes.first else { return "OpenVPN" }
-        return remotes.count > 1 ? "\(first.display) +\(remotes.count - 1)" : first.display
+        let servers: [String]
+        switch kind {
+        case .fortinet: return "\(server):\(String(port))"
+        case .openvpn: servers = (openVPN?.remotes ?? []).map(\.display)
+        case .wireguard: servers = wireGuard?.endpoints ?? []
+        }
+        guard let first = servers.first else { return kind.title }
+        return servers.count > 1 ? "\(first) +\(servers.count - 1)" : first
     }
 
     func validated() throws -> Connection {
@@ -86,6 +139,15 @@ struct Connection: Codable, Identifiable, Equatable {
         var value = self
         value.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.name.isEmpty else { throw AppFailure("Informe um nome.") }
+        if isWireGuard {
+            guard wireGuard != nil else { throw AppFailure("Perfil WireGuard ausente; importe-o novamente.") }
+            value.server = ""
+            value.trustedCertificate = ""
+            value.authentication = .password
+            value.username = ""
+            value.openVPN = nil
+            return value
+        }
         if isOpenVPN {
             guard let summary = openVPN else { throw AppFailure("Perfil OpenVPN ausente; importe-o novamente.") }
             value.server = ""
@@ -117,7 +179,7 @@ struct Connection: Codable, Identifiable, Equatable {
 
 extension Connection {
     enum CodingKeys: String, CodingKey {
-        case id, name, server, port, username, authentication, trustedCertificate, kind, openVPN
+        case id, name, server, port, username, authentication, trustedCertificate, kind, openVPN, wireGuard
     }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -130,6 +192,7 @@ extension Connection {
         trustedCertificate = try values.decode(String.self, forKey: .trustedCertificate)
         kind = try values.decodeIfPresent(VPNProtocol.self, forKey: .kind) ?? .fortinet
         openVPN = try values.decodeIfPresent(OpenVPNSummary.self, forKey: .openVPN)
+        wireGuard = try values.decodeIfPresent(WireGuardSummary.self, forKey: .wireGuard)
     }
 }
 
@@ -153,7 +216,13 @@ enum BinaryLocator {
     static func defaultPath(for kind: RuntimeKind) -> String {
         candidates(name: kind.executableName).first {
             FileManager.default.isExecutableFile(atPath: $0)
-        } ?? (kind == .openvpn ? "/opt/homebrew/sbin/openvpn" : "/opt/homebrew/bin/openfortivpn")
+        } ?? {
+            switch kind {
+            case .openfortivpn: return "/opt/homebrew/bin/openfortivpn"
+            case .openvpn: return "/opt/homebrew/sbin/openvpn"
+            case .wireguard: return "/opt/homebrew/bin/wireguard-go"
+            }
+        }()
     }
 }
 
@@ -191,21 +260,33 @@ struct JSONStore {
     }
 }
 
-/// Imported OpenVPN profiles (normalized, inline material only), one 0600 file per
-/// connection inside a 0700 directory of the app's own data folder.
-struct OpenVPNProfileStore {
+/// Imported profiles (OpenVPN: normalized, inline material only; WireGuard: normalized,
+/// with the private key), one 0600 file per connection inside a 0700 directory of the
+/// app's own data folder.
+struct ProfileStore {
     let directory: URL
-    init(directory: URL) { self.directory = directory }
-    init(store: JSONStore) { directory = store.directory.appendingPathComponent("OpenVPN", isDirectory: true) }
-    func file(_ id: UUID) -> URL { directory.appendingPathComponent(id.uuidString + ".ovpn") }
+    let fileExtension: String
+    let label: String
+    let maximumSize: Int
+    init(directory: URL, fileExtension: String = "ovpn", label: String = "OpenVPN", maximumSize: Int = OpenVPNProfile.maximumNormalizedSize) {
+        self.directory = directory; self.fileExtension = fileExtension; self.label = label; self.maximumSize = maximumSize
+    }
+    static func openVPN(_ store: JSONStore) -> ProfileStore {
+        ProfileStore(directory: store.directory.appendingPathComponent("OpenVPN", isDirectory: true))
+    }
+    static func wireGuard(_ store: JSONStore) -> ProfileStore {
+        ProfileStore(directory: store.directory.appendingPathComponent("WireGuard", isDirectory: true), fileExtension: "conf",
+                     label: "WireGuard", maximumSize: WireGuardProfile.maximumSize)
+    }
+    func file(_ id: UUID) -> URL { directory.appendingPathComponent(id.uuidString + "." + fileExtension) }
     func read(_ id: UUID) throws -> String {
         let url = file(id)
         guard FileManager.default.fileExists(atPath: url.path) else {
-            throw AppFailure("O perfil OpenVPN desta conexão não foi encontrado. Importe-o novamente.")
+            throw AppFailure("O perfil \(label) desta conexão não foi encontrado. Importe-o novamente.")
         }
         let data = try Data(contentsOf: url)
-        guard data.count <= OpenVPNProfile.maximumNormalizedSize, let text = String(data: data, encoding: .utf8) else {
-            throw AppFailure("Perfil OpenVPN salvo ilegível.")
+        guard data.count <= maximumSize, let text = String(data: data, encoding: .utf8) else {
+            throw AppFailure("Perfil \(label) salvo ilegível.")
         }
         return text
     }
@@ -216,13 +297,13 @@ struct OpenVPNProfileStore {
         let temporary = directory.appendingPathComponent(".\(id.uuidString).\(UUID().uuidString).tmp")
         // Created 0600 before any byte is written; then atomically renamed into place.
         guard FileManager.default.createFile(atPath: temporary.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
-            throw AppFailure("Não foi possível gravar o perfil OpenVPN.")
+            throw AppFailure("Não foi possível gravar o perfil \(label).")
         }
         do {
             let handle = try FileHandle(forWritingTo: temporary)
             try handle.write(contentsOf: Data(text.utf8))
             try handle.close()
-            guard rename(temporary.path, url.path) == 0 else { throw AppFailure("Não foi possível gravar o perfil OpenVPN.") }
+            guard rename(temporary.path, url.path) == 0 else { throw AppFailure("Não foi possível gravar o perfil \(label).") }
         } catch {
             try? FileManager.default.removeItem(at: temporary)
             throw error

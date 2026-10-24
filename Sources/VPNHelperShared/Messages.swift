@@ -91,11 +91,26 @@ public struct OpenVPNRequest: Codable, Equatable, Sendable {
     }
 }
 
+/// WireGuard session: a normalized wg-quick style profile. The helper validates it again,
+/// sends the keys to wireguard-go over its root-only UAPI socket and configures addresses,
+/// routes and DNS itself; no PreUp/PostUp script exists in a normalized profile.
+public struct WireGuardRequest: Codable, Equatable, Sendable {
+    public var connectionID: UUID
+    public var profile: String
+    public init(connectionID: UUID, profile: String) { self.connectionID = connectionID; self.profile = profile }
+}
+
 /// The VPN clients the helper can freeze and run. Each has its own approved copy.
 public enum RuntimeKind: String, Codable, CaseIterable, Sendable {
-    case openfortivpn, openvpn
-    public var executableName: String { rawValue }
-    public var title: String { self == .openfortivpn ? "openfortivpn" : "OpenVPN" }
+    case openfortivpn, openvpn, wireguard
+    public var executableName: String { self == .wireguard ? "wireguard-go" : rawValue }
+    public var title: String {
+        switch self {
+        case .openfortivpn: return "openfortivpn"
+        case .openvpn: return "OpenVPN"
+        case .wireguard: return "WireGuard"
+        }
+    }
 }
 
 public enum HelperRequest: Codable, Equatable, Sendable {
@@ -113,6 +128,10 @@ public enum HelperRequest: Codable, Equatable, Sendable {
     case inspectOpenVPNRuntime(path: String)
     case approveOpenVPNRuntime(path: String, digest: String, authorization: Data)
     case startOpenVPN(OpenVPNRequest)
+    /// Same flow for wireguard-go (a single static Mach-O; no script is frozen).
+    case inspectWireGuardRuntime(path: String)
+    case approveWireGuardRuntime(path: String, digest: String, authorization: Data)
+    case startWireGuard(WireGuardRequest)
     case stop(token: String)
     case stopAll
     /// Refuse unless every client and stale supervisor is idle; prevent new starts.
@@ -150,16 +169,35 @@ public struct HelperStatus: Codable, Equatable, Sendable {
     /// Approved OpenVPN copy, independent of the openfortivpn one.
     public var openVPNRuntime: RuntimeSummary?
     public var openVPNRuntimeProblem: String?
+    /// Approved wireguard-go copy.
+    public var wireGuardRuntime: RuntimeSummary?
+    public var wireGuardRuntimeProblem: String?
     public init(protocolVersion: Int, helperVersion: String, runtime: RuntimeSummary?, runtimeProblem: String?,
                 userAuthorized: Bool, activeSessions: Int, stoppingConnections: [UUID],
-                openVPNRuntime: RuntimeSummary? = nil, openVPNRuntimeProblem: String? = nil) {
+                openVPNRuntime: RuntimeSummary? = nil, openVPNRuntimeProblem: String? = nil,
+                wireGuardRuntime: RuntimeSummary? = nil, wireGuardRuntimeProblem: String? = nil) {
         self.protocolVersion = protocolVersion; self.helperVersion = helperVersion; self.runtime = runtime
         self.runtimeProblem = runtimeProblem; self.userAuthorized = userAuthorized
         self.activeSessions = activeSessions; self.stoppingConnections = stoppingConnections
         self.openVPNRuntime = openVPNRuntime; self.openVPNRuntimeProblem = openVPNRuntimeProblem
+        self.wireGuardRuntime = wireGuardRuntime; self.wireGuardRuntimeProblem = wireGuardRuntimeProblem
     }
-    public func runtime(_ kind: RuntimeKind) -> RuntimeSummary? { kind == .openvpn ? openVPNRuntime : runtime }
-    public func runtimeProblem(_ kind: RuntimeKind) -> String? { kind == .openvpn ? openVPNRuntimeProblem : runtimeProblem }
+    public func runtime(_ kind: RuntimeKind) -> RuntimeSummary? {
+        switch kind {
+        case .openfortivpn: return runtime
+        case .openvpn: return openVPNRuntime
+        case .wireguard: return wireGuardRuntime
+        }
+    }
+    public func runtimeProblem(_ kind: RuntimeKind) -> String? {
+        switch kind {
+        case .openfortivpn: return runtimeProblem
+        case .openvpn: return openVPNRuntimeProblem
+        case .wireguard: return wireGuardRuntimeProblem
+        }
+    }
+    /// At least one VPN client is approved.
+    public var anyRuntime: Bool { RuntimeKind.allCases.contains { runtime($0) != nil } }
 }
 
 public struct InventoryItem: Codable, Equatable, Sendable {

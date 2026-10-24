@@ -1,7 +1,8 @@
 # TunnelMac
 
-Native macOS GUI for the original [openfortivpn](https://github.com/adrienverge/openfortivpn)
-and, since 0.4.0, for [OpenVPN](https://openvpn.net/community/) 2.7+ profiles,
+Native macOS GUI for the original [openfortivpn](https://github.com/adrienverge/openfortivpn),
+for [OpenVPN](https://openvpn.net/community/) 2.7+ profiles (since 0.4.0) and for
+[WireGuard](https://www.wireguard.com) configurations through `wireguard-go` (since 0.5.0),
 using SwiftUI/AppKit and a bundled SMAppService/XPC privileged helper. Independent
 of, and not affiliated with, Fortinet or the openfortivpn project. No VPN executable
 or Homebrew libraries are bundled in the distributed app.
@@ -80,6 +81,31 @@ and adds its own `script-security`, `dns-updown`, `auth-retry none` and inline
 credentials. `auth RSA-SHA256` is offered as `auth SHA256` only after confirmation.
 OpenVPN reconnects internally; `AUTH_FAILED` blocks retries until the credentials
 are reviewed.
+
+### WireGuard
+
+Install `wireguard-go` (`brew install wireguard-go`; `wireguard-tools` also installs it),
+then approve **WireGuard** in Configurações → Serviço privilegiado. The approval freezes
+the `wireguard-go` executable; `wg`, `wg-quick` and Homebrew's bash are not used.
+
+Use **+** (⌘N) → **WireGuard** with the `.conf` exported by the server (wg-quick
+format). The normalized profile, including the private key, is stored in
+`~/Library/Application Support/VPNGUI/WireGuard` (0600); the original is not modified,
+a world-readable original produces a warning, and after saving the app offers to move
+it to the Trash. `PreUp`/`PostUp`/`PreDown`/`PostDown`, `SaveConfig` and `FwMark` are
+removed with a warning; unknown keys refuse the import. `Table` accepts `auto`, `main`
+or `off`.
+
+On Conectar the helper runs `wireguard-go -f utun` under the supervisor, sends the keys
+over its root-only UAPI socket and then does what wg-quick does on macOS: addresses and
+MTU with `ifconfig`, `AllowedIPs` as routes (`0.0.0.0/1` + `128.0.0.0/1`, `::/1` +
+`8000::/1` for a full tunnel), a host route to each endpoint through the current
+gateway, and the profile's `DNS` on the primary network service (dynamic store, not
+saved network preferences). Routes and DNS are recorded first and undone on disconnect,
+when wireguard-go exits, or at the next helper start after a crash. Host-name endpoints
+are resolved by the helper (IPv4 preferred). WireGuard has no connection to wait for:
+the session is marked connected once the tunnel is configured, and the first handshake
+is logged.
 
 No OTP/PIN form or client-certificate UI is implemented for Fortinet. Certificate failures require
 explicit review and approval of the profile's trusted digest; TLS is not disabled.

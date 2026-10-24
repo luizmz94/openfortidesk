@@ -17,7 +17,9 @@ final class AppModel: ObservableObject {
     var onUserConnect: (() -> Void)?
     private var store: JSONStore?
     /// Imported OpenVPN profiles, next to connections.json.
-    private(set) var profiles: OpenVPNProfileStore?
+    private(set) var profiles: ProfileStore?
+    /// Imported WireGuard profiles (with their private keys), next to connections.json.
+    private(set) var wireGuardProfiles: ProfileStore?
     init(store suppliedStore: JSONStore? = nil, passwords: PasswordStore = PasswordStore(),
          cookies: SAMLCookieStore = SAMLCookieStore(), service: ServiceController? = nil) {
         self.passwords = passwords
@@ -29,7 +31,8 @@ final class AppModel: ObservableObject {
         do {
             let store = try suppliedStore ?? JSONStore()
             self.store = store
-            profiles = OpenVPNProfileStore(store: store)
+            profiles = .openVPN(store)
+            wireGuardProfiles = .wireGuard(store)
             data = try store.load()
             for connection in data.connections { _ = manager.session(connection.id) }
             ready = true
@@ -40,8 +43,8 @@ final class AppModel: ObservableObject {
         }
     }
     /// `openVPNProfile` is the normalized profile of a new import (or a replacement);
-    /// nil keeps the profile already saved for this connection.
-    func save(_ connection: Connection, password: String, openVPNProfile: String? = nil) throws {
+    /// nil keeps the profile already saved for this connection. `wireGuardProfile` likewise.
+    func save(_ connection: Connection, password: String, openVPNProfile: String? = nil, wireGuardProfile: String? = nil) throws {
         guard ready, let store else { throw AppFailure("Os dados não foram carregados; o arquivo foi preservado.") }
         guard manager.sessions[connection.id]?.state.active != true else { throw AppFailure("Desconecte antes de editar.") }
         let c = try connection.validated()
@@ -60,7 +63,15 @@ final class AppModel: ObservableObject {
                 catch let violation as RuleViolation { throw AppFailure(violation.message) }
             } else { _ = try profiles.read(c.id) }
         }
+        if c.isWireGuard {
+            guard let wireGuardProfiles else { throw AppFailure("Pasta de perfis indisponível.") }
+            if let wireGuardProfile {
+                do { _ = try WireGuardProfile.validated(wireGuardProfile) }
+                catch let violation as RuleViolation { throw AppFailure(violation.message) }
+            } else { _ = try wireGuardProfiles.read(c.id) }
+        }
         let previousProfile = c.isOpenVPN && openVPNProfile != nil ? try? profiles?.read(c.id) : nil
+        let previousWireGuard = c.isWireGuard && wireGuardProfile != nil ? try? wireGuardProfiles?.read(c.id) : nil
         let previous = try passwords.read(c.id)
         // Any change to gateway, port, user, authentication or certificate drops the saved
         // SAML session. Renaming keeps it; the identity check on read is a second barrier.
@@ -73,6 +84,7 @@ final class AppModel: ObservableObject {
         else { updated.connections.append(c) }
         do {
             if let openVPNProfile { try profiles?.write(openVPNProfile, id: c.id) }
+            if let wireGuardProfile { try wireGuardProfiles?.write(wireGuardProfile, id: c.id) }
             if c.usesPassword { try passwords.write(password, id: c.id) }
             else { try passwords.delete(c.id) }
             try store.save(updated)
@@ -81,6 +93,9 @@ final class AppModel: ObservableObject {
             else { try? passwords.delete(c.id) }
             if openVPNProfile != nil {
                 if let previousProfile { try? profiles?.write(previousProfile, id: c.id) } else { try? profiles?.delete(c.id) }
+            }
+            if wireGuardProfile != nil {
+                if let previousWireGuard { try? wireGuardProfiles?.write(previousWireGuard, id: c.id) } else { try? wireGuardProfiles?.delete(c.id) }
             }
             throw error
         }
@@ -103,6 +118,7 @@ final class AppModel: ObservableObject {
         }
         try? cookies.delete(connection.id)
         try? profiles?.delete(connection.id)
+        try? wireGuardProfiles?.delete(connection.id)
         data = updated
         manager.sessions.removeValue(forKey: connection.id)
     }
@@ -149,10 +165,14 @@ final class AppModel: ObservableObject {
                 guard let profiles else { throw AppFailure("Pasta de perfis indisponível.") }
                 profile = try profiles.read(connection.id)
             }
+            if connection.isWireGuard {
+                guard let wireGuardProfiles else { throw AppFailure("Pasta de perfis indisponível.") }
+                profile = try wireGuardProfiles.read(connection.id)
+            }
             // Fail locally instead of looping on a service that cannot run the session.
             if service.blockNewSessions { throw AppFailure("O serviço está sendo removido ou atualizado; novas conexões aguardam.") }
             if manager.harness == nil, let reason = service.unavailableReason(for: connection.kind.runtime) { throw AppFailure(reason) }
-            manager.connect(connection, password: password, retrying: retrying, openVPNProfile: profile)
+            manager.connect(connection, password: password, retrying: retrying, profile: profile)
         } catch {
             if retrying { manager.retryFailed(connection.id, message: error.localizedDescription) }
             self.error = error.localizedDescription

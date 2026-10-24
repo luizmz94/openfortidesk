@@ -19,13 +19,19 @@ public final class HelperCore {
         public var authorizer: AdminAuthorizing
         public var idleTimeout: TimeInterval
         public var onIdle: (() -> Void)?
+        /// System access of WireGuard sessions (production: root tools, UAPI, dynamic store).
+        public var wireGuardHost: WireGuardHost
+        /// Monitor period of WireGuard sessions (handshake, gateway and DNS checks).
+        public var wireGuardInterval: TimeInterval
         public init(stateDirectory: String, ownership: TrustedOwnership, supervisorSource: String,
                     supervisorRequirement: String?, helperVersion: String, probeIdentity: (uid_t, gid_t)?,
-                    authorizer: AdminAuthorizing, idleTimeout: TimeInterval = 30, onIdle: (() -> Void)? = nil) {
+                    authorizer: AdminAuthorizing, idleTimeout: TimeInterval = 30, onIdle: (() -> Void)? = nil,
+                    wireGuardHost: WireGuardHost = SystemWireGuardHost(), wireGuardInterval: TimeInterval = 3) {
             self.stateDirectory = stateDirectory; self.ownership = ownership; self.supervisorSource = supervisorSource
             self.supervisorRequirement = supervisorRequirement; self.helperVersion = helperVersion
             self.probeIdentity = probeIdentity; self.authorizer = authorizer
             self.idleTimeout = idleTimeout; self.onIdle = onIdle
+            self.wireGuardHost = wireGuardHost; self.wireGuardInterval = wireGuardInterval
         }
     }
 
@@ -56,7 +62,10 @@ public final class HelperCore {
                              probeIdentity: configuration.probeIdentity)
         try? store.prepareDirectories()
         registry = SessionRegistry(path: (try? configuration.ownership.verifyChain(configuration.stateDirectory)) != nil ? store.registryPath : nil)
-        queue.async { self.scheduleIdleCheck() }
+        queue.async {
+            self.recoverWireGuard()
+            self.scheduleIdleCheck()
+        }
     }
 
     // MARK: Clients
@@ -139,6 +148,7 @@ public final class HelperCore {
             case .status: respond(.status(self.status(for: client)))
             case .start(let connection): respond(self.start(connection, for: client))
             case .startOpenVPN(let connection): respond(self.startOpenVPN(connection, for: client))
+            case .startWireGuard(let connection): respond(self.startWireGuard(connection, for: client))
             case .stop(let token): respond(self.stop(token, for: client))
             case .stopAll:
                 for session in self.sessions.values where session.ownerID == client.id { session.stop() }
@@ -160,6 +170,9 @@ public final class HelperCore {
                 self.approve(path: path, digest: digest, authorization: authorization, kind: .openfortivpn, client: client, respond: respond)
             case .approveOpenVPNRuntime(let path, let digest, let authorization):
                 self.approve(path: path, digest: digest, authorization: authorization, kind: .openvpn, client: client, respond: respond)
+            case .inspectWireGuardRuntime(let path): self.inspect(path: path, kind: .wireguard, client: client, respond: respond)
+            case .approveWireGuardRuntime(let path, let digest, let authorization):
+                self.approve(path: path, digest: digest, authorization: authorization, kind: .wireguard, client: client, respond: respond)
             case .removeManagedFiles(let authorization):
                 self.removeManagedFiles(authorization: authorization, client: client, respond: respond)
             }
@@ -187,13 +200,17 @@ public final class HelperCore {
         var openVPN: RuntimeSummary?
         var openVPNProblem: String?
         do { openVPN = try store.loadActive(.openvpn).summary } catch { openVPNProblem = Self.wrap(error).message }
+        var wireGuard: RuntimeSummary?
+        var wireGuardProblem: String?
+        do { wireGuard = try store.loadActive(.wireguard).summary } catch { wireGuardProblem = Self.wrap(error).message }
         let authorized = (try? store.loadState().authorizedUsers.contains(client.uid)) ?? false
         let stale = registry.stale(excluding: Set(sessions.keys)).filter { $0.uid == client.uid }.map(\.connectionID)
         return HelperStatus(protocolVersion: HelperConstants.protocolVersion, helperVersion: configuration.helperVersion,
                             runtime: runtime, runtimeProblem: problem, userAuthorized: authorized,
                             activeSessions: sessions.values.filter { $0.ownerID == client.id }.count,
                             stoppingConnections: Array(Set(stale)),
-                            openVPNRuntime: openVPN, openVPNRuntimeProblem: openVPNProblem)
+                            openVPNRuntime: openVPN, openVPNRuntimeProblem: openVPNProblem,
+                            wireGuardRuntime: wireGuard, wireGuardRuntimeProblem: wireGuardProblem)
     }
 
     /// Checks shared by every client kind, before anything is prepared.
@@ -233,6 +250,39 @@ public final class HelperCore {
                       secrets: (request.password?.count ?? 0) >= 4 ? [request.password!] : [])
     }
 
+    /// Undoes routes and DNS left by WireGuard sessions of an earlier helper process.
+    /// Sessions of this process and supervisors still alive keep their records.
+    private func recoverWireGuard() {
+        let live = Set(sessions.keys).union(registry.stale(excluding: Set(sessions.keys)).map(\.token))
+        WireGuardTunnel.recover(directory: store.wireGuardRecords, host: configuration.wireGuardHost, live: live)
+    }
+
+    private func startWireGuard(_ request: WireGuardRequest, for client: Client) -> HelperResponse {
+        if let refusal = admit(request.connectionID, for: client) { return .failure(refusal) }
+        let runtime: ActiveRuntime
+        do { runtime = try store.loadActive(.wireguard) } catch { return .failure(Self.wrap(error)) }
+        let profile: WireGuardProfile
+        do { profile = try WireGuardProfile.validated(request.profile) } catch { return .failure(Self.wrap(error)) }
+        recoverWireGuard()
+        do { try store.prepareDirectories() } catch { return .failure(Self.wrap(error)) }
+        let token = UUID().uuidString
+        let nameFile = store.work + "/wg.\(token).name"
+        unlink(nameFile)
+        let tunnel = WireGuardTunnel(token: token, profile: profile, host: configuration.wireGuardHost, nameFile: nameFile,
+                                     recordPath: store.wireGuardRecords + "/\(token).json")
+        tunnel.interval = configuration.wireGuardInterval
+        // wireguard-go reads nothing else from the environment; LOG_LEVEL=verbose shows handshakes.
+        let environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C",
+                           "WG_TUN_NAME_FILE": nameFile, "LOG_LEVEL": "verbose"]
+        return launch(connectionID: request.connectionID, client: client, runtime: runtime, content: Data(), cookie: nil,
+                      supervisorArguments: ["--wireguard", runtime.executable], plan: LaunchPlan(clientArguments: [], mode: .none),
+                      secrets: [], token: token, environment: environment) { [queue] runner in
+            tunnel.emit = { [weak runner] line in queue.async { runner?.pump.enqueue(.line(line)) } }
+            tunnel.fail = { [weak runner] in queue.async { runner?.stop() } }
+            return tunnel
+        }
+    }
+
     private func start(_ request: ConnectionRequest, for client: Client) -> HelperResponse {
         if let refusal = admit(request.connectionID, for: client) { return .failure(refusal) }
         let runtime: ActiveRuntime
@@ -256,7 +306,9 @@ public final class HelperCore {
     /// Supervisor start shared by every client: protected config descriptor, optional cookie
     /// pipe, fixed environment, session bookkeeping and the ordered event reader.
     private func launch(connectionID: UUID, client: Client, runtime: ActiveRuntime, content: Data, cookie: String?,
-                        supervisorArguments: [String], plan: LaunchPlan, secrets: [String]) -> HelperResponse {
+                        supervisorArguments: [String], plan: LaunchPlan, secrets: [String],
+                        token: String = UUID().uuidString, environment: [String: String]? = nil,
+                        observer: ((SessionRunner) -> SessionObserver)? = nil) -> HelperResponse {
         let supervisor: String
         do { supervisor = try store.preparedSupervisor(source: configuration.supervisorSource, requirement: configuration.supervisorRequirement) }
         catch { return .failure(Self.wrap(error)) }
@@ -268,7 +320,7 @@ public final class HelperCore {
             if let cookie { cookieFD = try ProtectedDescriptor.pipe(Data(cookie.utf8)) }
         } catch { return .failure(Self.wrap(error)) }
         let argv = [supervisor] + supervisorArguments
-        let environment = RuntimeEnvironment.list(runtime.environment)
+        let environment = RuntimeEnvironment.list(environment ?? runtime.environment)
         var pid: pid_t = 0
         var cArguments: [UnsafeMutablePointer<CChar>?] = argv.map { strdup($0) } + [nil]
         var cEnvironment: [UnsafeMutablePointer<CChar>?] = environment.map { strdup($0) } + [nil]
@@ -281,10 +333,10 @@ public final class HelperCore {
         guard control >= 0 else {
             return .failure(HelperFailure(.internalError, "Não foi possível iniciar o supervisor (\(String(cString: strerror(errno))))."))
         }
-        let token = UUID().uuidString
         let pump = EventPump(token: token, sink: client.sink)
         let runner = SessionRunner(token: token, ownerID: client.id, uid: client.uid, connectionID: connectionID,
                                    supervisorPID: pid, control: control, queue: queue, pump: pump)
+        runner.observer = observer?(runner)
         runner.onFinish = { [weak self] runner in
             guard let self else { return }
             self.registry.remove(token: runner.token)
@@ -298,7 +350,7 @@ public final class HelperCore {
         }
         sessions[token] = runner
         registry.add(token: token, uid: client.uid, connectionID: connectionID, pid: pid)
-        runner.startReading(captureCookie: plan.mode == .capture, secrets: secrets)
+        runner.startReading(captureCookie: plan.mode == .capture, secrets: secrets, keepDebug: runtime.kind == .wireguard)
         return .started(token: token, plan: plan)
     }
 

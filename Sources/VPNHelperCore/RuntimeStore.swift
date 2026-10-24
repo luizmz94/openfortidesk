@@ -36,8 +36,16 @@ struct HelperState: Codable {
     var authorizedUsers: [UInt32] = []
     var activeOpenVPNRuntime: String?
     var previousOpenVPNRuntime: String?
+    var activeWireGuardRuntime: String?
+    var previousWireGuardRuntime: String?
 
-    func active(_ kind: RuntimeKind) -> String? { kind == .openvpn ? activeOpenVPNRuntime : activeRuntime }
+    func active(_ kind: RuntimeKind) -> String? {
+        switch kind {
+        case .openfortivpn: return activeRuntime
+        case .openvpn: return activeOpenVPNRuntime
+        case .wireguard: return activeWireGuardRuntime
+        }
+    }
     mutating func activate(_ id: String, kind: RuntimeKind) {
         switch kind {
         case .openfortivpn:
@@ -46,9 +54,15 @@ struct HelperState: Codable {
         case .openvpn:
             if activeOpenVPNRuntime != id { previousOpenVPNRuntime = activeOpenVPNRuntime }
             activeOpenVPNRuntime = id
+        case .wireguard:
+            if activeWireGuardRuntime != id { previousWireGuardRuntime = activeWireGuardRuntime }
+            activeWireGuardRuntime = id
         }
     }
-    var kept: [String] { [activeRuntime, previousRuntime, activeOpenVPNRuntime, previousOpenVPNRuntime].compactMap { $0 } }
+    var kept: [String] {
+        [activeRuntime, previousRuntime, activeOpenVPNRuntime, previousOpenVPNRuntime,
+         activeWireGuardRuntime, previousWireGuardRuntime].compactMap { $0 }
+    }
 }
 
 /// A verified, ready-to-execute runtime. Valid only for the request being served.
@@ -121,6 +135,8 @@ public final class RuntimeStore {
     public var work: String { root + "/work" }
     public var supervisors: String { root + "/supervisor" }
     public var registryPath: String { root + "/sessions.json" }
+    /// What WireGuard sessions changed outside their interface (routes, DNS), until undone.
+    public var wireGuardRecords: String { root + "/wireguard" }
 
     // MARK: State
 
@@ -129,9 +145,10 @@ public final class RuntimeStore {
         try SecureFile.makeDirectory(runtimes, mode: 0o755)
         try SecureFile.makeDirectory(supervisors, mode: 0o755)
         try SecureFile.makeDirectory(work, mode: 0o700)
+        try SecureFile.makeDirectory(wireGuardRecords, mode: 0o700)
         try ownership.verifyChain(work)
         // Leftovers of a crash between create and unlink. Only the helper's own names.
-        for entry in (try? FileManager.default.contentsOfDirectory(atPath: work)) ?? [] where entry.hasPrefix("cfg.") {
+        for entry in (try? FileManager.default.contentsOfDirectory(atPath: work)) ?? [] where entry.hasPrefix("cfg.") || entry.hasPrefix("wg.") {
             unlink(work + "/" + entry)
         }
     }
@@ -268,21 +285,36 @@ public final class RuntimeStore {
             // Probe the staged copy exactly as it will run, without root when possible.
             let environment = RuntimeEnvironment.list(RuntimeEnvironment.variables(root: staging))
             let executable = staging + "/bin/" + kind.executableName
-            let help = try Probe.run(executable, ["--help"], environment: environment, identity: probeIdentity)
-            let recognized = kind == .openvpn ? RuntimeCapabilities.looksLikeOpenVPN(help.text) : RuntimeCapabilities.looksLikeOpenFortiVPN(help.text)
-            guard recognized else {
-                let expected = kind == .openvpn ? "do OpenVPN 2.7 ou superior (--dns-updown)" : "do openfortivpn"
-                throw failure(.runtimeRejected, "A cópia gerenciada não apresentou as opções esperadas \(expected) (código \(help.status)).")
-            }
+            // wireguard-go has no --help: any other argument is taken as an interface name.
+            let help = kind == .wireguard ? nil : try Probe.run(executable, ["--help"], environment: environment, identity: probeIdentity)
             let versionOutput = try Probe.run(executable, ["--version"], environment: environment, identity: probeIdentity)
+            let recognized: Bool
+            switch kind {
+            case .openfortivpn: recognized = RuntimeCapabilities.looksLikeOpenFortiVPN(help?.text ?? "")
+            case .openvpn: recognized = RuntimeCapabilities.looksLikeOpenVPN(help?.text ?? "")
+            case .wireguard: recognized = versionOutput.status == 0 && RuntimeCapabilities.looksLikeWireGuardGo(versionOutput.text)
+            }
+            guard recognized else {
+                let expected: String
+                switch kind {
+                case .openfortivpn: expected = "as opções esperadas do openfortivpn"
+                case .openvpn: expected = "as opções esperadas do OpenVPN 2.7 ou superior (--dns-updown)"
+                case .wireguard: expected = "a versão do wireguard-go para macOS"
+                }
+                throw failure(.runtimeRejected, "A cópia gerenciada não apresentou \(expected) (código \((help ?? versionOutput).status)).")
+            }
             var firstLine = versionOutput.text.split(separator: "\n").first.map(String.init)?.trimmingCharacters(in: .whitespaces) ?? ""
             // "OpenVPN 2.7.8 aarch64-apple-darwin… [SSL (OpenSSL)] …"
             if kind == .openvpn, firstLine.hasPrefix("OpenVPN ") {
                 firstLine = firstLine.split(separator: " ").dropFirst().first.map(String.init) ?? ""
             }
+            // "wireguard-go v0.0.20250522"
+            if kind == .wireguard, firstLine.hasPrefix("wireguard-go v") {
+                firstLine = String(firstLine.dropFirst("wireguard-go v".count))
+            }
             let version = firstLine.range(of: #"^[0-9][0-9A-Za-z.+_-]{0,31}$"#, options: .regularExpression) != nil ? firstLine : "desconhecida"
             let manifest = RuntimeManifest(id: id, approvedAt: Date(), approvedByUID: uid, version: version,
-                                           capabilities: RuntimeCapabilities(help: help.text),
+                                           capabilities: RuntimeCapabilities(help: help?.text ?? ""),
                                            inventoryDigest: inventory.digest, sourcePath: inventory.executable.resolvedPath,
                                            sourceSHA256: inventory.executable.sha256, files: files,
                                            sources: inventory.report.items, systemLibraries: inventory.systemLibraries,
@@ -338,7 +370,7 @@ public final class RuntimeStore {
     /// Removes only the helper's own managed files (runtime copies, supervisor copy,
     /// state and work directory). Nothing outside `root` is touched.
     public func removeAll() {
-        for path in [runtimes, supervisors, work, statePath, registryPath] { SecureFile.removeTree(path) }
+        for path in [runtimes, supervisors, work, wireGuardRecords, statePath, registryPath] { SecureFile.removeTree(path) }
         rmdir(root)
     }
 

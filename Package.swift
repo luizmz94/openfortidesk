@@ -15,7 +15,7 @@ let package = Package(
         .target(name: "VPNHelperShared", linkerSettings: [.linkedFramework("Security")]),
         // Helper policy/state, independent of the XPC transport (also driven by local checks).
         .target(name: "VPNHelperCore", dependencies: ["VPNHelperShared", "ProcessBridge"],
-                linkerSettings: [.linkedFramework("Security")]),
+                linkerSettings: [.linkedFramework("Security"), .linkedFramework("SystemConfiguration")]),
         // LaunchDaemon registered with SMAppService.daemon(plistName:).
         .executableTarget(name: "VPNHelper", dependencies: ["VPNHelperCore", "VPNHelperShared"]),
         // The app links VPNHelperCore only to run the local checks against real helper code

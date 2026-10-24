@@ -18,10 +18,19 @@ user approves it, the helper copies the local installation, its libraries, its
 `dns-updown` script and license files into the protected runtime. OpenVPN is a
 registered trademark of OpenVPN Inc.; this project is independent of it.
 
-**Protocol marks:** the Fortinet and OpenVPN marks in the Nova conexão chooser use
-path data from Simple Icons 13.21.0 (https://simpleicons.org, CC0-1.0). The marks are
-trademarks of Fortinet, Inc. and OpenVPN Inc.; they only identify which kind of
-server a connection talks to and imply no affiliation or endorsement.
+**wireguard-go** is an external dependency, maintained by Jason A. Donenfeld and the
+WireGuard contributors: https://git.zx2c4.com/wireguard-go (MIT). It is not included
+in release archives; when the user approves it, the helper copies the local Homebrew
+executable and its license files into the protected runtime. wg-quick and the other
+wireguard-tools programs are not used: the helper implements the macOS tunnel setup
+itself, following wg-quick's documented behavior. "WireGuard" and the WireGuard logo
+are registered trademarks of Jason A. Donenfeld; this project is independent of it.
+
+**Protocol marks:** the Fortinet, OpenVPN and WireGuard marks in the Nova conexão
+chooser use path data from Simple Icons 13.21.0 (https://simpleicons.org, CC0-1.0).
+The marks are trademarks of Fortinet, Inc., OpenVPN Inc. and Jason A. Donenfeld; they
+only identify which kind of server a connection talks to and imply no affiliation or
+endorsement.
 
 **Brand assets:** the original V/node symbol and icon were supplied by the project
 owner as the VPN GUI brand pack. SVG content credentials identify Claude as a

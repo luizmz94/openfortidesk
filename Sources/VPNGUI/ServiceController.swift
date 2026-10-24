@@ -34,6 +34,7 @@ protocol SessionTransport: AnyObject {
     var capabilities: RuntimeCapabilities? { get }
     func start(_ request: ConnectionRequest, completion: @escaping (Result<(String, LaunchPlan), HelperFailure>) -> Void)
     func startOpenVPN(_ request: OpenVPNRequest, completion: @escaping (Result<(String, LaunchPlan), HelperFailure>) -> Void)
+    func startWireGuard(_ request: WireGuardRequest, completion: @escaping (Result<(String, LaunchPlan), HelperFailure>) -> Void)
     func stop(_ token: String, completion: @escaping (HelperFailure?) -> Void)
 }
 
@@ -79,8 +80,8 @@ final class ServiceController: ObservableObject, SessionTransport {
             case .unresponsive(let reason): return "O serviço está habilitado, mas o handshake autenticado falhou: \(reason)"
             case .incompatible(let reason): return reason
             case .outdated(let version): return "O serviço registrado é \(version); este app é \(HelperConstants.fullVersion). Use Atualizar serviço (desconecta antes)."
-            case .runtimeMissing(let reason): return reason + " Use Aprovar openfortivpn… ou Aprovar OpenVPN… (requer administrador)."
-            case .userNotAuthorized: return "Um administrador precisa autorizar este usuário do macOS: use Aprovar openfortivpn… ou Aprovar OpenVPN…."
+            case .runtimeMissing(let reason): return reason + " Aprove o cliente VPN que você usa (openfortivpn, OpenVPN ou WireGuard); requer administrador."
+            case .userNotAuthorized: return "Um administrador precisa autorizar este usuário do macOS: aprove um cliente VPN (openfortivpn, OpenVPN ou WireGuard)."
             case .ready: return "Conectar não pede senha de administrador enquanto o serviço estiver habilitado e íntegro."
             }
         }
@@ -142,7 +143,7 @@ final class ServiceController: ObservableObject, SessionTransport {
     }
     var unavailableReason: String? {
         if blockNewSessions { return "O serviço está sendo removido ou atualizado; novas conexões aguardam." }
-        if health == .ready, status?.runtime != nil || status?.openVPNRuntime != nil { return nil }
+        if health == .ready, status?.anyRuntime == true { return nil }
         return "\(health.title). \(health.detail)"
     }
     func unavailableReason(for kind: RuntimeKind) -> String? {
@@ -201,8 +202,8 @@ final class ServiceController: ObservableObject, SessionTransport {
     func apply(_ status: HelperStatus) {
         self.status = status
         if status.helperVersion != HelperConstants.fullVersion { health = .outdated(status.helperVersion) }
-        else if status.runtime == nil && status.openVPNRuntime == nil {
-            health = .runtimeMissing(status.runtimeProblem ?? "Nenhum openfortivpn ou OpenVPN aprovado.")
+        else if !status.anyRuntime {
+            health = .runtimeMissing(status.runtimeProblem ?? "Nenhum cliente VPN aprovado.")
         }
         else if !status.userAuthorized { health = .userNotAuthorized }
         else { health = .ready }
@@ -250,7 +251,12 @@ final class ServiceController: ObservableObject, SessionTransport {
         guard let client, health != .checking else { return }
         busy = true
         inspection = nil
-        let request: HelperRequest = kind == .openvpn ? .inspectOpenVPNRuntime(path: candidate) : .inspectRuntime(path: candidate)
+        let request: HelperRequest
+        switch kind {
+        case .openfortivpn: request = .inspectRuntime(path: candidate)
+        case .openvpn: request = .inspectOpenVPNRuntime(path: candidate)
+        case .wireguard: request = .inspectWireGuardRuntime(path: candidate)
+        }
         client.request(request, timeout: 60) { [weak self] result in
             guard let self else { return }
             self.busy = false
@@ -272,9 +278,15 @@ final class ServiceController: ObservableObject, SessionTransport {
         }
         busy = true
         let kind = inspection.kind
-        let request: HelperRequest = kind == .openvpn
-            ? .approveOpenVPNRuntime(path: inspection.candidatePath, digest: inspection.digest, authorization: authorization.externalForm)
-            : .approveRuntime(path: inspection.candidatePath, digest: inspection.digest, authorization: authorization.externalForm)
+        let request: HelperRequest
+        switch kind {
+        case .openfortivpn:
+            request = .approveRuntime(path: inspection.candidatePath, digest: inspection.digest, authorization: authorization.externalForm)
+        case .openvpn:
+            request = .approveOpenVPNRuntime(path: inspection.candidatePath, digest: inspection.digest, authorization: authorization.externalForm)
+        case .wireguard:
+            request = .approveWireGuardRuntime(path: inspection.candidatePath, digest: inspection.digest, authorization: authorization.externalForm)
+        }
         client.request(request, timeout: 600) { [weak self] result in
             withExtendedLifetime(authorization) {}
             guard let self else { return }
@@ -407,6 +419,19 @@ final class ServiceController: ObservableObject, SessionTransport {
             completion(.failure(HelperFailure(.unavailable, unavailableReason(for: .openvpn) ?? "Serviço indisponível."))); return
         }
         client.request(.startOpenVPN(request), timeout: 30) { result in
+            switch result {
+            case .success(.started(let token, let plan)): completion(.success((token, plan)))
+            case .success(.failure(let failure)), .failure(let failure): completion(.failure(failure))
+            case .success: completion(.failure(HelperFailure(.invalidRequest, "Resposta inesperada do serviço.")))
+            }
+        }
+    }
+
+    func startWireGuard(_ request: WireGuardRequest, completion: @escaping (Result<(String, LaunchPlan), HelperFailure>) -> Void) {
+        guard unavailableReason(for: .wireguard) == nil, let client else {
+            completion(.failure(HelperFailure(.unavailable, unavailableReason(for: .wireguard) ?? "Serviço indisponível."))); return
+        }
+        client.request(.startWireGuard(request), timeout: 30) { result in
             switch result {
             case .success(.started(let token, let plan)): completion(.success((token, plan)))
             case .success(.failure(let failure)), .failure(let failure): completion(.failure(failure))

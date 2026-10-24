@@ -45,7 +45,7 @@ struct MainView: View {
                     }
                     ToolbarItem(placement: .primaryAction) {
                         Button { editing = Connection() } label: { Label("Nova conexão", systemImage: "plus") }
-                            .help("Nova conexão: Fortinet ou OpenVPN (⌘N)")
+                            .help("Nova conexão: Fortinet, OpenVPN ou WireGuard (⌘N)")
                             .keyboardShortcut("n")
                             .disabled(!model.ready)
                     }
@@ -94,9 +94,7 @@ struct MainView: View {
                 deleting = nil
             }
         } message: {
-            Text(deleting?.isOpenVPN == true
-                 ? "O cadastro, a senha salva e a cópia privada do perfil OpenVPN serão removidos. O arquivo original não é alterado."
-                 : "O cadastro, a senha salva e a sessão SAML guardada serão removidos.")
+            Text(deleteMessage(deleting))
         }
         .onReceive(menuBar.$pendingSelection) { id in
             // Selection requested by the menu bar (review access or certificate).
@@ -105,6 +103,14 @@ struct MainView: View {
                 if model.data.connections.contains(where: { $0.id == id }) { selected = id }
                 menuBar.pendingSelection = nil
             }
+        }
+    }
+
+    private func deleteMessage(_ connection: Connection?) -> String {
+        switch connection?.kind {
+        case .openvpn: return "O cadastro, a senha salva e a cópia privada do perfil OpenVPN serão removidos. O arquivo original não é alterado."
+        case .wireguard: return "O cadastro e a cópia privada do perfil WireGuard, com a chave privada, serão removidos. O arquivo original não é alterado."
+        default: return "O cadastro, a senha salva e a sessão SAML guardada serão removidos."
         }
     }
 
@@ -164,7 +170,7 @@ struct MainView: View {
                            tone: .warning)
         } else if model.data.connections.isEmpty {
             EmptyStateView(symbol: "network.badge.shield.half.filled", title: "Nenhuma conexão cadastrada",
-                           message: "Cadastre um gateway Fortinet ou importe um perfil OpenVPN para conectar por aqui ou pela barra de menus.") {
+                           message: "Cadastre um gateway Fortinet ou importe um perfil OpenVPN ou WireGuard para conectar por aqui ou pela barra de menus.") {
                 Button { editing = Connection() } label: { Label("Nova conexão", systemImage: "plus") }
                     .adaptiveButtonStyle(prominent: true)
                     .controlSize(.large)
@@ -424,7 +430,41 @@ struct ConnectionDetail: View {
     }
 
     @ViewBuilder private var facts: some View {
-        if connection.isOpenVPN { openVPNFacts } else { fortinetFacts }
+        switch connection.kind {
+        case .fortinet: fortinetFacts
+        case .openvpn: openVPNFacts
+        case .wireguard: wireGuardFacts
+        }
+    }
+
+    private var wireGuardFacts: some View {
+        let summary = connection.wireGuard
+        return VStack(alignment: .leading, spacing: 10) {
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 14, verticalSpacing: 7) {
+                fact("Protocolo", "WireGuard")
+                fact("Servidor", (summary?.endpoints ?? []).isEmpty ? "Sem endpoint" : (summary?.endpoints ?? []).joined(separator: ", "))
+                fact("Endereço", (summary?.addresses ?? []).joined(separator: ", "))
+                fact("Rotas", summary?.routesDescription ?? "—")
+                fact("DNS", (summary?.dns ?? []).isEmpty ? "Não altera o DNS" : (summary?.dns ?? []).joined(separator: ", "))
+                fact("Chave pública", summary?.publicKey ?? "—")
+            }
+            .font(.callout)
+            exposedNotice(summary?.stillExposed ?? [], keys: "O arquivo original com a chave privada")
+        }
+    }
+
+    /// Originals left in the source folder that others can read.
+    @ViewBuilder private func exposedNotice(_ exposed: [String], keys: String) -> some View {
+        if !exposed.isEmpty {
+            InlineNotice(tone: .warning, symbol: "lock.open",
+                         title: "\(keys) pode ser lido por outros usuários do Mac",
+                         message: exposed.map { ($0 as NSString).lastPathComponent }.joined(separator: ", ")
+                            + " ainda está na pasta de origem. A cópia do app é privada; apague o original ou use chmod 600.") {
+                Button("Mostrar no Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting(exposed.map { URL(fileURLWithPath: $0) })
+                }
+            }
+        }
     }
 
     private var openVPNFacts: some View {
@@ -563,9 +603,11 @@ struct ClientCredit: View {
     @State private var hovering = false
 
     private var project: (name: String, url: URL) {
-        kind == .openvpn
-            ? ("OpenVPN", URL(string: "https://github.com/OpenVPN/openvpn")!)
-            : ("openfortivpn", URL(string: "https://github.com/adrienverge/openfortivpn")!)
+        switch kind {
+        case .openfortivpn: return ("openfortivpn", URL(string: "https://github.com/adrienverge/openfortivpn")!)
+        case .openvpn: return ("OpenVPN", URL(string: "https://github.com/OpenVPN/openvpn")!)
+        case .wireguard: return ("wireguard-go", URL(string: "https://git.zx2c4.com/wireguard-go")!)
+        }
     }
 
     var body: some View {

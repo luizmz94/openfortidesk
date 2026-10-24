@@ -91,6 +91,17 @@ public final class EventPump {
     }
 }
 
+/// Network work tied to a session's client process (WireGuard: the helper configures the
+/// tunnel). Called from the session's reader thread: `clientStarted` once the supervisor
+/// reported the client PID, `clientEnded` after the supervisor was reaped and before the
+/// session's terminal event is queued, so cleanup is done when the app hears about the exit.
+protocol SessionObserver: AnyObject {
+    func clientStarted(pid: pid_t)
+    /// Every output line of the client (already filtered), in order.
+    func clientOutput(_ line: String)
+    func clientEnded()
+}
+
 /// One openfortivpn under its own supervisor. The helper keeps the supervisor's PID
 /// (its child, never looked up by name) and the control socket. Stop = "STOP\n";
 /// losing the helper or the client = EOF, which the supervisor treats as a stop too.
@@ -106,6 +117,8 @@ final class SessionRunner {
     private(set) var stopRequested = false
     private(set) var finished = false
     var onFinish: ((SessionRunner) -> Void)?
+    /// Set before `startReading`; never changed afterwards.
+    var observer: SessionObserver?
 
     init(token: String, ownerID: UUID, uid: uid_t, connectionID: UUID, supervisorPID: pid_t, control: Int32,
          queue: DispatchQueue, pump: EventPump) {
@@ -115,13 +128,14 @@ final class SessionRunner {
 
     /// Starts the ordered reader. Runs on its own thread so a slow client never blocks
     /// the supervisor: output is always drained and bounded by EventPump.
-    func startReading(captureCookie: Bool, secrets: [String]) {
+    func startReading(captureCookie: Bool, secrets: [String], keepDebug: Bool = false) {
         let thread = Thread { [self] in
-            var filter = OutputLineFilter(captureCookie: captureCookie, secrets: secrets)
+            var filter = OutputLineFilter(captureCookie: captureCookie, secrets: secrets, keepDebug: keepDebug)
             var sawPID = false
             var buffer = [UInt8](repeating: 0, count: 8192)
             func forward(_ events: [OutputLineFilter.Event]) {
                 var kinds: [SessionEvent.Kind] = []
+                var startedPID: pid_t?
                 for event in events {
                     switch event {
                     case .overflow: kinds.append(.overflow)
@@ -130,15 +144,19 @@ final class SessionRunner {
                         if !sawPID, line.hasPrefix("__VPNGUI_PID__="), let pid = Int32(line.dropFirst("__VPNGUI_PID__=".count)), pid > 1 {
                             sawPID = true
                             kinds.append(.started(pid: pid))
+                            startedPID = pid
                         } else if line.hasPrefix("__VPNGUI_") {
                             continue // Exit status comes from waitpid, never from output text.
                         } else {
                             kinds.append(.line(line))
+                            observer?.clientOutput(line)
                         }
                     }
                 }
                 guard !kinds.isEmpty else { return }
                 queue.async { kinds.forEach { self.pump.enqueue($0) } }
+                // After the started event is queued, so the observer's lines follow it.
+                if let startedPID { observer?.clientStarted(pid: startedPID) }
             }
             while true {
                 let count = Darwin.read(control, &buffer, buffer.count)
@@ -155,6 +173,7 @@ final class SessionRunner {
                 let low = status & 0x7f
                 code = low == 0 ? Int((status >> 8) & 0xff) : 128 + Int(low)
             } else { code = -1 }
+            observer?.clientEnded()
             queue.async {
                 // Closed on the queue that also writes STOP, so the number is never reused under it.
                 close(self.control)

@@ -103,7 +103,8 @@ final class HelperFixture {
         return String(cString: real)
     }
 
-    init(root existing: String? = nil, listenerRequirement: String?, delegateRequirement: String?) throws {
+    init(root existing: String? = nil, listenerRequirement: String?, delegateRequirement: String?,
+         wireGuardHost: WireGuardHost = SystemWireGuardHost(uapiDirectory: "/nonexistent-uapi"), wireGuardInterval: TimeInterval = 3) throws {
         root = try existing ?? Self.temporaryRoot()
         state = root + "/state"
         core = HelperCore(HelperCore.Configuration(
@@ -114,7 +115,9 @@ final class HelperFixture {
             helperVersion: HelperConstants.fullVersion,
             probeIdentity: nil,
             authorizer: authorizer,
-            idleTimeout: 3600))
+            idleTimeout: 3600,
+            wireGuardHost: wireGuardHost,
+            wireGuardInterval: wireGuardInterval))
         recorder = RecordingDelegate(HelperListenerDelegate(core: core, clientRequirement: delegateRequirement))
         if let listenerRequirement { listener.setConnectionCodeSigningRequirement(listenerRequirement) }
         listener.delegate = recorder

@@ -122,7 +122,7 @@ struct ServicePanel: View {
                 .frame(width: 22)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text(kind == .openvpn ? "OpenVPN" : "openfortivpn (Fortinet)").font(.body.weight(.medium))
+                Text(Self.clientTitle(kind)).font(.body.weight(.medium))
                 Text(presentation.text).font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let command = presentation.command {
@@ -152,6 +152,14 @@ struct ServicePanel: View {
                 .fixedSize()
                 .adaptiveButtonStyle(prominent: true)
                 .disabled(service.busy)
+        }
+    }
+
+    static func clientTitle(_ kind: RuntimeKind) -> String {
+        switch kind {
+        case .openfortivpn: return "openfortivpn (Fortinet)"
+        case .openvpn: return "OpenVPN"
+        case .wireguard: return "WireGuard (wireguard-go)"
         }
     }
 

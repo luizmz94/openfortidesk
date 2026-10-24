@@ -1,7 +1,15 @@
 TunnelMac release candidate: macOS 13+, Apple Silicon arm64 only.
 
 TunnelMac is the new name of OpenFortiDesk: the app now handles Fortinet SSL VPN
-(openfortivpn) and OpenVPN profiles.
+(openfortivpn), OpenVPN profiles and WireGuard configurations.
+
+Changes in 0.5.0-rc.1:
+- WireGuard support: import the server's `.conf` (wg-quick format). PreUp/PostUp/
+  PreDown/PostDown hooks are removed; the private key stays in a private profile.
+- The privileged service approves and freezes `wireguard-go` and sets up the tunnel
+  itself (keys over UAPI, addresses, routes, endpoint route and DNS), without wg-quick
+  or bash; routes and DNS are undone on disconnect and after a crash.
+- Helper protocol 4: use Atualizar serviço after upgrading.
 
 Changes in 0.4.0-rc.1:
 - OpenVPN 2.7+ support next to Fortinet: import a single `.ovpn`/`.conf` or a
@@ -23,8 +31,8 @@ cannot be kept):
 
 Developer ID signed, hardened, timestamped, notarized and stapled.
 First launch requires macOS background-service approval and administrator approval
-of the protected openfortivpn/OpenVPN runtime. openfortivpn and OpenVPN are external
-Homebrew dependencies. Overlapping routes/DNS are not resolved; SAML logins queue on
+of the protected openfortivpn/OpenVPN/wireguard-go runtime. openfortivpn, OpenVPN and
+wireguard-go are external Homebrew dependencies. Overlapping routes/DNS are not resolved; SAML logins queue on
 port 8020 and cookie validity depends on the gateway. SIGKILL of a supervisor can
 leave an orphaned client. Root registration and Homebrew lifecycle integration
 require isolated VM validation; this candidate is not declared stable. Uninstall

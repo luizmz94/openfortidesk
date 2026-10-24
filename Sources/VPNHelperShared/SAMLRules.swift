@@ -102,7 +102,9 @@ public struct LaunchPlan: Codable, Equatable, Sendable {
 
 /// Reassembles client output into lines before anything leaves the helper. Drops every
 /// DEBUG message (including unlabelled continuation lines) and any line containing a known
-/// session secret. Only the strict cookie message is extracted.
+/// session secret. Only the strict cookie message is extracted. wireguard-go sessions keep
+/// DEBUG lines (`keepDebug`): its verbose log is how it reports handshakes, and it never
+/// writes key material (peers appear as "peer(ZTJk…f2Tw)").
 public struct OutputLineFilter {
     public enum Event: Equatable {
         case line(String)
@@ -115,8 +117,10 @@ public struct OutputLineFilter {
     private var insideDebug = false
     private var secrets: [Data] = []
     public let captureCookie: Bool
-    public init(captureCookie: Bool, secrets: [String] = []) {
+    public let keepDebug: Bool
+    public init(captureCookie: Bool, secrets: [String] = [], keepDebug: Bool = false) {
         self.captureCookie = captureCookie
+        self.keepDebug = keepDebug
         self.secrets = secrets.filter { !$0.isEmpty }.map { Data($0.utf8) }
         // The bare value can appear unlabelled; hide it as well.
         for secret in secrets where secret.hasPrefix(SAMLCookieRules.prefix) {
@@ -160,7 +164,8 @@ public struct OutputLineFilter {
         let raw = pending
         let line = String(decoding: raw, as: UTF8.self)
         let labelled = ["ERROR:", "WARN:", "INFO:", "__VPNGUI_", "Supervisor:"].contains { line.hasPrefix($0) }
-        if line.hasPrefix("DEBUG:") {
+            || (keepDebug && line.hasPrefix("DEBUG:"))
+        if line.hasPrefix("DEBUG:") && !keepDebug {
             insideDebug = true
             if captureCookie, let cookie = SAMLCookieRules.capture(line) {
                 remember(cookie)

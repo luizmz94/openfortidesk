@@ -64,7 +64,7 @@ enum Maintenance {
     }
 
     /// Root-side processes of the product: the helper, any supervisor and the managed
-    /// clients (openfortivpn/openvpn copies in the helper's state directory).
+    /// clients (openfortivpn/openvpn/wireguard-go copies in the helper's state directory).
     static func runningPrivilegedProcesses() -> [(pid: pid_t, path: String)] {
         runningProcesses(excluding: getpid()) { path in
             path.hasPrefix(HelperConstants.stateDirectory + "/")

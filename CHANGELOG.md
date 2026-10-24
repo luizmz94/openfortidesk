@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.5.0-rc.1 — unreleased
+
+- WireGuard support next to Fortinet and OpenVPN. **+** (⌘N) → **WireGuard** imports
+  the `.conf` exported by a WireGuard server (the wg-quick format: one `[Interface]`
+  with `PrivateKey`/`Address`/`DNS`/`MTU`, one or more `[Peer]`). The normalized profile,
+  with the private key, is kept in a private 0600 file under
+  `~/Library/Application Support/VPNGUI/WireGuard`; the original is never modified and
+  can be moved to the Trash after saving. The app shows the profile's public key.
+- `PreUp`/`PostUp`/`PreDown`/`PostDown`, `SaveConfig` and `FwMark` are removed with a
+  warning (wg-quick runs those hooks as root); unknown keys refuse the import. The
+  helper checks the same rules again and refuses any profile that still has them.
+- The privileged service approves and freezes `wireguard-go` (Homebrew) like the other
+  clients. wg-quick and bash are not used: the supervisor runs `wireguard-go -f utun`
+  (`--wireguard` mode), the helper sends the keys over wireguard-go's root-only UAPI
+  socket (checking that the socket belongs to that process), then configures addresses,
+  MTU, `AllowedIPs` routes (`0/1` + `128/1` for a full tunnel), a host route to each
+  endpoint through the physical gateway and the profile's DNS on the primary network
+  service — the same steps wg-quick takes on macOS, each shown in the log.
+- Routes and DNS outside the interface are recorded before they change and undone when
+  wireguard-go exits, and by the next helper start if the helper died first. Gateway
+  changes move the endpoint routes; network changes re-apply the DNS.
+- The connection is marked connected once the tunnel is configured; the first
+  handshake is logged, and a warning appears if none happens within 30 seconds.
+  wireguard-go's verbose log (no key material) is kept for WireGuard sessions only.
+- Helper protocol 4: update the service after upgrading.
+
 ## 0.4.0-rc.1 — unreleased
 
 - Rename the product from OpenFortiDesk to **TunnelMac** (bundle `TunnelMac.app`,
