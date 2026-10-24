@@ -20,6 +20,16 @@
   from the writable Homebrew prefix. Credentials travel inline in the protected,
   unlinked config descriptor (`--config /dev/fd/3`), never in arguments or files.
 - Helper protocol 3: update the service after upgrading.
+- Nova conexão (+ at the top of the sidebar, ⌘N) first asks for the VPN type
+  (Fortinet or OpenVPN). OpenVPN accepts a file, a .visc folder, or the profile and
+  its certificates selected together (or dropped on the sheet).
+- Editing an imported OpenVPN profile shows the auth RSA-SHA256 → SHA256
+  compatibility option and can turn it off again.
+- After saving an imported OpenVPN profile the app offers to move the original
+  files (or the whole .visc folder) to the Trash; the private copy is already saved.
+- Connection details show the name and state in the toolbar, and a footer credits
+  the client that makes the tunnel (openfortivpn or OpenVPN, with version and link).
+  The privileged service is a status icon next to + at the top of the sidebar.
 
 ## 0.3.0-rc.5 — 2026-10-24
 

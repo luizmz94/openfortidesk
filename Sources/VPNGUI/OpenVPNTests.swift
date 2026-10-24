@@ -151,6 +151,8 @@ enum OpenVPNTests {
             let imported = try OpenVPNImporter.load(folder)
             try require(try digest(folder) == before, "Arquivos originais foram alterados")
             try require(imported.name == "Summit", "Nome sugerido: \(imported.name)")
+            try require(imported.sourceFolder?.path == folder.standardizedFileURL.path && imported.sourceFiles.count == 5,
+                        "Limpeza da pasta .visc: \(String(describing: imported.sourceFolder)) \(imported.sourceFiles.count)")
             try require(imported.profile.requiresCredentials, "auth-user-pass não detectado")
             try require(Set(imported.profile.blocks.map(\.tag)) == ["ca", "cert", "key", "tls-auth"], "Arquivos não viraram inline")
             try require(imported.profile.directives.contains(OpenVPNDirective("key-direction", ["1"])), "Direção do tls-auth perdida")
@@ -160,6 +162,12 @@ enum OpenVPNTests {
             try require(imported.warnings.contains { $0.contains("key.key") && $0.contains("chmod 600") }
                         && imported.warnings.contains { $0.contains("ta.key") }, "Chaves legíveis por outros sem aviso")
             try require(!imported.warnings.contains { $0.contains("ca.crt") }, "Certificado público tratado como segredo")
+            // The detail only warns while an exposed original is still there and still exposed.
+            try require(Set(imported.summary.stillExposed.map { ($0 as NSString).lastPathComponent }) == ["key.key", "ta.key"], "Originais expostos")
+            chmod(folder.appendingPathComponent("key.key").path, 0o600)
+            try FileManager.default.removeItem(at: folder.appendingPathComponent("ta.key"))
+            try require(imported.summary.stillExposed.isEmpty, "Aviso continua depois de corrigir/apagar os originais")
+            try (fakeStatic + "\n").write(to: folder.appendingPathComponent("ta.key"), atomically: true, encoding: .utf8)
             let privateFolder = try OpenVPNImporter.load(try bundle(keyMode: 0o600))
             try require(!privateFolder.warnings.contains { $0.contains("chmod") }, "Aviso de permissão indevido")
             // The file itself can be chosen too; a folder with two profiles asks for a choice.
@@ -167,6 +175,41 @@ enum OpenVPNTests {
             try viscosity.write(to: folder.appendingPathComponent("Outro.ovpn"), atomically: true, encoding: .utf8)
             let message = try expectFailure("Pasta ambígua") { _ = try OpenVPNImporter.load(folder) }
             try require(message.contains("mais de um perfil"), message)
+        }
+
+        test("Vários arquivos escolhidos juntos: perfil + certificados de outra pasta, nomes repetidos e sobras") {
+            let profileFolder = root.appendingPathComponent("perfil-\(UUID())")
+            let certFolder = root.appendingPathComponent("certs-\(UUID())")
+            try FileManager.default.createDirectory(at: profileFolder, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: certFolder, withIntermediateDirectories: true)
+            let config = profileFolder.appendingPathComponent("Summit.ovpn")
+            try viscosity.write(to: config, atomically: true, encoding: .utf8)
+            var files: [URL] = []
+            for (name, content) in [("ca.crt", fakeCertificate), ("cert.crt", fakeCertificate), ("key.key", fakeKey), ("ta.key", fakeStatic), ("extra.txt", "x")] {
+                let url = certFolder.appendingPathComponent(name)
+                try (content + "\n").write(to: url, atomically: true, encoding: .utf8)
+                chmod(url.path, 0o600)
+                files.append(url)
+            }
+            _ = try expectFailure("Certificados em outra pasta sem seleção") { _ = try OpenVPNImporter.load(config) }
+            let imported = try OpenVPNImporter.load([config] + files)
+            try require(Set(imported.profile.blocks.map(\.tag)) == ["ca", "cert", "key", "tls-auth"], "Anexos não usados")
+            try require(imported.warnings.contains { $0.contains("extra.txt") }, "Arquivo sobrando sem aviso")
+            try require(imported.sourceFolder == nil && Set(imported.sourceFiles.map(\.lastPathComponent)) == ["Summit.ovpn", "ca.crt", "cert.crt", "key.key", "ta.key"],
+                        "Originais oferecidos para a Lixeira: \(imported.sourceFiles.map(\.lastPathComponent))")
+            _ = try expectFailure("Dois perfis") { _ = try OpenVPNImporter.load([config, config.deletingLastPathComponent().appendingPathComponent("x.conf")] + files) }
+            _ = try expectFailure("Sem perfil") { _ = try OpenVPNImporter.load(files) }
+            _ = try expectFailure("Pasta na seleção múltipla") { _ = try OpenVPNImporter.load([config, certFolder]) }
+        }
+
+        test("Compatibilidade reversível: aplicar, detectar e voltar ao valor original") {
+            let imported = try OpenVPNImporter.importText(singleFile, baseDirectory: root, suggestedName: "x", source: "")
+            guard let fix = imported.summary.compatibility else { throw TestSupport.Failure("Resumo sem a opção de compatibilidade") }
+            let fixed = OpenVPNCompatibility.apply(fix, to: imported.profile)
+            try require(OpenVPNCompatibility.isApplied(fix, in: fixed) && !OpenVPNCompatibility.isApplied(fix, in: imported.profile), "Estado")
+            try require(OpenVPNCompatibility.revert(fix, in: fixed) == imported.profile, "Desligar não voltou ao original")
+            let summary = try JSONDecoder().decode(OpenVPNSummary.self, from: JSONEncoder().encode(imported.summary))
+            try require(summary.compatibility == fix, "Opção não persiste no cadastro")
         }
 
         test("Referências: fora da pasta, absolutas, com .. ou por link simbólico são recusadas") {

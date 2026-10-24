@@ -42,6 +42,19 @@ struct OpenVPNSummary: Codable, Equatable {
     var warnings: [String] = []
     var source: String = ""
     var importedAt = Date()
+    /// Compatibility option this profile offers (auth RSA-SHAx → SHAx), applied or not.
+    var compatibility: OpenVPNCompatibility.DigestFix?
+    /// Original key files that other macOS users could read at import time (full paths).
+    var exposedOriginals: [String]?
+
+    /// Those originals that still exist and are still readable by others.
+    var stillExposed: [String] {
+        (exposedOriginals ?? []).filter { path in
+            guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+                  let mode = (attributes[.posixPermissions] as? NSNumber)?.intValue else { return false }
+            return mode & 0o077 != 0
+        }
+    }
 }
 
 struct Connection: Codable, Identifiable, Equatable {

@@ -42,7 +42,7 @@ location, inventoried and integrity-checked before every connection.
 
 ## Usage
 
-Use **+** to save a host, port, username and password or SAML authentication.
+Use **+** → **Fortinet SSL VPN** to save a host, port, username and password or SAML authentication.
 Passwords are stored in Keychain. Each profile has its own session, timer and
 in-memory log. Multiple sessions may coexist; overlapping routes and DNS are not
 resolved automatically. Closing the window (X/⌘W) leaves menu bar and VPNs running.
@@ -61,9 +61,9 @@ Install OpenVPN 2.7 or later (`brew install openvpn`), then use **Aprovar OpenVP
 in Configurações → Serviço privilegiado. The approval freezes the executable, its
 libraries and the `dns-updown` script that configures the tunnel's DNS.
 
-Use **Importar perfil OpenVPN…** (⌘I) with a single `.ovpn`/`.conf` that carries its
-keys inline, or with a Viscosity `.visc` folder whose profile references `ca.crt`,
-`cert.crt`, `key.key` and `ta.key`. Referenced files must sit inside the profile's
+Use **+** (⌘N) → **OpenVPN** with a single `.ovpn`/`.conf` that carries its keys
+inline, a Viscosity `.visc` folder whose profile references `ca.crt`, `cert.crt`,
+`key.key` and `ta.key`, or the profile and those files selected (or dropped) together. Referenced files must sit inside the profile's
 folder (no absolute paths, `..` or links leaving it); they are copied inline into a
 private profile under `~/Library/Application Support/VPNGUI/OpenVPN` (0600). The
 originals are not modified; a world-readable original key produces a warning.

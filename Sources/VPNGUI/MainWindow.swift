@@ -9,6 +9,7 @@ struct MainView: View {
     @State private var selected: UUID?
     @State private var editing: Connection?
     @State private var pendingImport: OpenVPNImport?
+    @ObservedObject private var service: ServiceController
     @State private var deleting: Connection?
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -17,29 +18,39 @@ struct MainView: View {
         _model = ObservedObject(wrappedValue: model)
         self.menuBar = menuBar
         _updates = ObservedObject(wrappedValue: menuBar.updates)
+        _service = ObservedObject(wrappedValue: model.service)
     }
 
     var body: some View {
-        HSplitView {
+        NavigationSplitView {
             sidebar
-                .frame(minWidth: 260, idealWidth: 300, maxWidth: 400, maxHeight: .infinity)
-                .background(.regularMaterial)
-                .navigationTitle("Conexões")
+                .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 400)
+                .withoutSidebarToggle()
                 .toolbar {
-                    ToolbarItem {
-                        Button { importOpenVPN() } label: { Label("Importar perfil OpenVPN", systemImage: "square.and.arrow.down") }
-                            .help("Importar perfil OpenVPN: .ovpn, .conf ou pasta .visc (⌘I)")
-                            .keyboardShortcut("i")
-                            .disabled(!model.ready)
+                    // Declared in the sidebar column; the flexible spacer (macOS 26+) pushes the
+                    // button to the sidebar's top right, next to the split.
+                    if #available(macOS 26.0, *) { ToolbarSpacer(.flexible) }
+                    ToolbarItem(placement: .primaryAction) {
+                        Button { menuBar.showSettings() } label: { Label("Configurações", systemImage: "gearshape") }
+                            .help("Configurações (⌘,)")
                     }
-                    ToolbarItem {
-                        Button { editing = Connection() } label: { Label("Nova conexão Fortinet", systemImage: "plus") }
-                            .help("Nova conexão Fortinet SSL VPN (⌘N)")
+                    ToolbarItem(placement: .primaryAction) {
+                        // Mostly a status light: green when the service and a client are approved.
+                        Button { menuBar.showServiceManagement() } label: {
+                            Label("Serviço privilegiado", systemImage: service.health.symbol)
+                                .foregroundStyle(service.health.tone.color)
+                        }
+                        .help("Serviço privilegiado: \(service.health.title)")
+                        .accessibilityLabel("Serviço privilegiado: \(service.health.title)")
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        Button { editing = Connection() } label: { Label("Nova conexão", systemImage: "plus") }
+                            .help("Nova conexão: Fortinet ou OpenVPN (⌘N)")
                             .keyboardShortcut("n")
                             .disabled(!model.ready)
                     }
                 }
-
+        } detail: {
             VStack(spacing: 0) {
                 if updates.showsCard, let offer = updates.offer {
                     UpdateCard(offer: offer, update: { menuBar.showSettings(.updates) },
@@ -51,7 +62,10 @@ struct MainView: View {
             }
             .animation(Motion.state(reduceMotion), value: updates.showsCard)
             .frame(minWidth: 530, maxWidth: .infinity, maxHeight: .infinity)
+            // With a connection selected, its name and state are a toolbar item of the detail.
+            .navigationTitle(model.data.connections.contains { $0.id == selected } ? "" : "Conexões")
         }
+        .navigationSplitViewStyle(.balanced)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             let open = openWindow
@@ -94,17 +108,6 @@ struct MainView: View {
         }
     }
 
-    /// Reads the chosen profile; the editor shows what was found and saves only on Adicionar.
-    private func importOpenVPN() {
-        guard let url = OpenVPNImportPanel.choose() else { return }
-        do {
-            let imported = try OpenVPNImporter.load(url)
-            pendingImport = imported
-            editing = Connection(name: imported.name, server: "", port: imported.profile.remotes.first?.port ?? 1194,
-                                 username: imported.username, kind: .openvpn, openVPN: imported.summary)
-        } catch { model.error = error.localizedDescription }
-    }
-
     // MARK: Sidebar
 
     private var sidebar: some View {
@@ -122,10 +125,6 @@ struct MainView: View {
             guard let connection = model.data.connections.first(where: { $0.id == selected }),
                   !model.manager.session(connection.id).state.active else { return }
             deleting = connection
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            ServiceStatusRow(service: model.service) { menuBar.showServiceManagement() }
-                .padding(.horizontal, 10).padding(.bottom, 10).padding(.top, 4)
         }
     }
 
@@ -166,13 +165,9 @@ struct MainView: View {
         } else if model.data.connections.isEmpty {
             EmptyStateView(symbol: "network.badge.shield.half.filled", title: "Nenhuma conexão cadastrada",
                            message: "Cadastre um gateway Fortinet ou importe um perfil OpenVPN para conectar por aqui ou pela barra de menus.") {
-                HStack(spacing: 10) {
-                    Button { editing = Connection() } label: { Label("Nova conexão Fortinet", systemImage: "plus") }
-                        .adaptiveButtonStyle(prominent: true)
-                    Button { importOpenVPN() } label: { Label("Importar perfil OpenVPN…", systemImage: "square.and.arrow.down") }
-                        .adaptiveButtonStyle()
-                }
-                .controlSize(.large)
+                Button { editing = Connection() } label: { Label("Nova conexão", systemImage: "plus") }
+                    .adaptiveButtonStyle(prominent: true)
+                    .controlSize(.large)
             }
         } else {
             EmptyStateView(symbol: "sidebar.left", title: "Selecione uma conexão",
@@ -287,10 +282,31 @@ struct ConnectionDetail: View {
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            scrollingContent
+            ClientCredit(kind: connection.kind.runtime, version: service.status?.runtime(connection.kind.runtime)?.version)
+                .padding(.horizontal, 28).padding(.bottom, 10).padding(.top, 2)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .toolbar {
+            // Name and state in the window's title area, instead of a header in the content.
+            ToolbarItem(placement: .navigation) {
+                HStack(spacing: 10) {
+                    Text(connection.name).font(.headline).lineLimit(1).truncationMode(.tail)
+                        .accessibilityAddTraits(.isHeader)
+                    StatePill(state: session.state, connectedAt: session.connectedAt)
+                }
+                // The toolbar draws a capsule around the item; keep the name off its edge.
+                .padding(.horizontal, 12)
+                .fixedSize()
+            }
+        }
+    }
+
+    private var scrollingContent: some View {
         GeometryReader { geometry in
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 18) {
-                    header
                     actions
                     notices
                     facts
@@ -324,17 +340,6 @@ struct ConnectionDetail: View {
         }
     }
 
-    private var header: some View {
-        HStack(alignment: .center, spacing: 16) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(connection.name).font(.title2.weight(.semibold)).lineLimit(2).truncationMode(.tail)
-                    .textSelection(.enabled)
-                    .accessibilityAddTraits(.isHeader)
-                StatePill(state: session.state, connectedAt: session.connectedAt)
-            }
-            Spacer(minLength: 0)
-        }
-    }
 
     private var actions: some View {
         GlassGroup(spacing: 10) {
@@ -429,18 +434,18 @@ struct ConnectionDetail: View {
                 fact("Servidores", (connection.openVPN?.remotes ?? []).map(\.display).joined(separator: ", "))
                 fact("Usuário", connection.username.isEmpty ? "—" : connection.username)
                 fact("Autenticação", connection.usesPassword ? "Certificado + usuário e senha" : "Certificado")
-                if let source = connection.openVPN?.source, !source.isEmpty { fact("Importado de", source) }
             }
             .font(.callout)
-            if let warnings = connection.openVPN?.warnings, !warnings.isEmpty {
-                DisclosureGroup("Avisos da importação (\(warnings.count))") {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(warnings, id: \.self) { Text("• " + $0).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+            // Only what still applies: originals left in the source folder that others can read.
+            if let exposed = connection.openVPN?.stillExposed, !exposed.isEmpty {
+                InlineNotice(tone: .warning, symbol: "lock.open",
+                             title: "Chaves originais legíveis por outros usuários do Mac",
+                             message: exposed.map { ($0 as NSString).lastPathComponent }.joined(separator: ", ")
+                                + " ainda estão na pasta de origem. A cópia do app é privada; apague os originais ou use chmod 600.") {
+                    Button("Mostrar no Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting(exposed.map { URL(fileURLWithPath: $0) })
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.top, 4)
                 }
-                .font(.callout)
             }
         }
     }
@@ -541,5 +546,41 @@ struct CertificateTrustSheet: View {
         return stride(from: 0, to: groups.count, by: 4)
             .map { groups[$0..<min($0 + 4, groups.count)].joined(separator: " ") }
             .joined(separator: "\n")
+    }
+}
+
+private extension View {
+    /// The sidebar stays visible; the + button is its only toolbar item.
+    @ViewBuilder func withoutSidebarToggle() -> some View {
+        if #available(macOS 14.0, *) { toolbar(removing: .sidebarToggle) } else { self }
+    }
+}
+
+/// Credit line: the tunnel is made by an independent open-source client; the app manages it.
+struct ClientCredit: View {
+    let kind: RuntimeKind
+    let version: String?
+    @State private var hovering = false
+
+    private var project: (name: String, url: URL) {
+        kind == .openvpn
+            ? ("OpenVPN", URL(string: "https://github.com/OpenVPN/openvpn")!)
+            : ("openfortivpn", URL(string: "https://github.com/adrienverge/openfortivpn")!)
+    }
+
+    var body: some View {
+        HStack {
+            Spacer(minLength: 0)
+            Link(destination: project.url) {
+                Text(version.map { "\(project.name) · \($0)" } ?? project.name)
+                    .underline(hovering)
+            }
+            .font(.caption)
+            .onHover { inside in
+                hovering = inside
+                if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }
+            .help("A conexão é feita pelo \(project.name), um projeto open source independente; este app só gerencia. Abrir o projeto oficial: \(project.url.absoluteString)")
+        }
     }
 }

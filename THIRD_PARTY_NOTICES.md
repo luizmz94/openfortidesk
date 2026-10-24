@@ -18,6 +18,11 @@ user approves it, the helper copies the local installation, its libraries, its
 `dns-updown` script and license files into the protected runtime. OpenVPN is a
 registered trademark of OpenVPN Inc.; this project is independent of it.
 
+**Protocol marks:** the Fortinet and OpenVPN marks in the Nova conexão chooser use
+path data from Simple Icons 13.21.0 (https://simpleicons.org, CC0-1.0). The marks are
+trademarks of Fortinet, Inc. and OpenVPN Inc.; they only identify which kind of
+server a connection talks to and imply no affiliation or endorsement.
+
 **Brand assets:** the original V/node symbol and icon were supplied by the project
 owner as the VPN GUI brand pack. SVG content credentials identify Claude as a
 creating/modifying tool, not an exclusive human author. They are retained as

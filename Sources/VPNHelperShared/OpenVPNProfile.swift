@@ -412,7 +412,7 @@ public enum OpenVPNRules {
 /// Compatibility rules that change a cryptographic parameter. They are never applied
 /// silently: the app shows each one and applies it only with the user's consent.
 public enum OpenVPNCompatibility {
-    public struct DigestFix: Equatable, Sendable {
+    public struct DigestFix: Codable, Equatable, Sendable {
         public var from: String
         public var to: String
         public init(from: String, to: String) { self.from = from; self.to = to }
@@ -437,6 +437,16 @@ public enum OpenVPNCompatibility {
         guard let range = line.range(of: #"Message hash algorithm '([A-Za-z0-9-]+)' not found"#, options: .regularExpression) else { return nil }
         let value = line[range].split(separator: "'").dropFirst().first.map(String.init) ?? ""
         return digestFix(value)
+    }
+
+    /// Undoes `apply` (the user turned the compatibility option off again).
+    public static func revert(_ fix: DigestFix, in profile: OpenVPNProfile) -> OpenVPNProfile {
+        apply(DigestFix(from: fix.to, to: fix.from), to: profile)
+    }
+
+    /// Whether the profile currently uses the fixed value of `fix`.
+    public static func isApplied(_ fix: DigestFix, in profile: OpenVPNProfile) -> Bool {
+        profile.directives.last { $0.name == "auth" }?.arguments == [fix.to]
     }
 
     public static func apply(_ fix: DigestFix, to profile: OpenVPNProfile) -> OpenVPNProfile {

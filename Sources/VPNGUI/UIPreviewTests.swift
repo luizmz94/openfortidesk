@@ -157,6 +157,7 @@ enum UIPreviewTests {
                 try render(ServicePanel(model: unavailableModel).padding(20), NSSize(width: 620, height: 360), "service-panel")
                 try render(ServiceStatusRow(service: model.service) {}, NSSize(width: 300, height: 56), "service-row")
                 try render(ConnectionEditor(model: model, connection: openVPN, pendingImport: imported, saved: {}), NSSize(width: 560, height: 640), "editor-openvpn-import")
+                try render(ConnectionEditor(model: model, connection: Connection(), saved: {}), NSSize(width: 560, height: 420), "editor-choose-type")
                 try render(ConnectionDetail(connection: openVPN, session: openVPNSession, model: model, edit: {}, delete: {}),
                            NSSize(width: 640, height: 560), "detail-openvpn-digest")
                 let versions = ClientVersionChecker(transport: DisabledUpdateTransport())
@@ -166,7 +167,7 @@ enum UIPreviewTests {
                 try render(ServicePanel(model: bothModel, versions: versions).padding(20), NSSize(width: 620, height: 520), "service-panel-both")
             }
             let files = try FileManager.default.contentsOfDirectory(atPath: output.path).filter { $0.hasSuffix(".png") }
-            try require(files.count == 34, "Renders esperados: 34, gerados: \(files.count)")
+            try require(files.count == 36, "Renders esperados: 36, gerados: \(files.count)")
         }
         return failures
     }

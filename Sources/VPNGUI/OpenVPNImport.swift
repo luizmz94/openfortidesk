@@ -13,10 +13,17 @@ struct OpenVPNImport: Equatable {
     /// `auth RSA-SHA256`-style value found; applied only if the user accepts.
     var digestFix: OpenVPNCompatibility.DigestFix?
     var source: String
+    /// Original files this import read (profile and referenced material). After the
+    /// private copy is saved the user may move them to the Trash.
+    var sourceFiles: [URL] = []
+    /// A .visc folder whose every visible entry was used: trashed as a whole.
+    var sourceFolder: URL?
+    var exposedOriginals: [String] = []
 
     var summary: OpenVPNSummary {
         OpenVPNSummary(remotes: profile.remotes, requiresCredentials: profile.requiresCredentials,
-                       warnings: warnings, source: source)
+                       warnings: warnings, source: source, compatibility: digestFix,
+                       exposedOriginals: exposedOriginals.isEmpty ? nil : exposedOriginals)
     }
     func profileText(applyingFix: Bool) -> String {
         guard applyingFix, let digestFix else { return profile.text }
@@ -29,7 +36,35 @@ struct OpenVPNImport: Equatable {
 enum OpenVPNImporter {
     static let maximumReferencedFile = 64 * 1024
 
-    static func load(_ url: URL) throws -> OpenVPNImport {
+    /// Several files chosen together: exactly one profile (.ovpn/.conf) plus the
+    /// certificates and keys it references, matched by file name. Files left out of the
+    /// selection are still looked up next to the profile, with the usual folder rules.
+    static func load(_ urls: [URL]) throws -> OpenVPNImport {
+        guard urls.count > 1 else {
+            guard let url = urls.first else { throw AppFailure("Nenhum arquivo escolhido.") }
+            return try load(url)
+        }
+        var configs: [URL] = []
+        var attachments: [String: URL] = [:]
+        for url in urls {
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+                throw AppFailure("Ao escolher vários itens, escolha só arquivos (o perfil e seus certificados), não pastas.")
+            }
+            if ["ovpn", "conf"].contains(url.pathExtension.lowercased()) { configs.append(url); continue }
+            guard attachments[url.lastPathComponent] == nil else {
+                throw AppFailure("Dois arquivos escolhidos têm o mesmo nome: \(url.lastPathComponent).")
+            }
+            attachments[url.lastPathComponent] = url
+        }
+        guard configs.count == 1, let config = configs.first else {
+            throw AppFailure(configs.isEmpty ? "Entre os arquivos escolhidos não há um perfil .ovpn ou .conf."
+                                             : "Escolha um único perfil .ovpn ou .conf junto com os certificados.")
+        }
+        return try load(config, attachments: attachments)
+    }
+
+    static func load(_ url: URL, attachments: [String: URL] = [:]) throws -> OpenVPNImport {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
             throw AppFailure("Arquivo não encontrado: \(url.path)")
@@ -49,7 +84,30 @@ enum OpenVPNImporter {
         if stem.lowercased() == "config", isDirectory.boolValue { stem = url.deletingPathExtension().lastPathComponent }
         let source = (isDirectory.boolValue ? url : file).path
             .replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~")
-        return try importText(text, baseDirectory: base, suggestedName: stem, source: source)
+        var imported = try importText(text, baseDirectory: base, suggestedName: stem, source: source, attachments: attachments)
+        imported.sourceFiles.insert(file.standardizedFileURL, at: 0)
+        if isDirectory.boolValue {
+            let used = Set(imported.sourceFiles.map { $0.resolvingSymlinksInPath().path })
+            let entries = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? []
+            let visible = entries.filter { !$0.lastPathComponent.hasPrefix(".") }
+            if !visible.isEmpty, visible.allSatisfy({ used.contains($0.resolvingSymlinksInPath().path) }) {
+                imported.sourceFolder = url.standardizedFileURL
+            }
+        }
+        return imported
+    }
+
+    /// Moves the originals of a saved import to the Trash (recoverable until emptied).
+    /// Returns the names that could not be moved.
+    @discardableResult
+    static func trashSources(of imported: OpenVPNImport) -> [String] {
+        let targets = imported.sourceFolder.map { [$0] } ?? imported.sourceFiles
+        var failed: [String] = []
+        for url in targets {
+            do { try FileManager.default.trashItem(at: url, resultingItemURL: nil) }
+            catch { failed.append(url.lastPathComponent) }
+        }
+        return failed
     }
 
     /// Viscosity bundles hold one config.conf (or a single .ovpn) next to the key files.
@@ -62,7 +120,22 @@ enum OpenVPNImporter {
         throw AppFailure("A pasta contém mais de um perfil (\(entries.map(\.lastPathComponent).sorted().joined(separator: ", "))). Escolha o arquivo desejado.")
     }
 
-    static func importText(_ text: String, baseDirectory: URL, suggestedName: String, source: String) throws -> OpenVPNImport {
+    static func importText(_ text: String, baseDirectory: URL, suggestedName: String, source: String,
+                           attachments: [String: URL] = [:]) throws -> OpenVPNImport {
+        var used = Set<String>()
+        var readFiles: [URL] = []
+        var exposedFiles: [String] = []
+        func read(_ path: String, line: Int) throws -> (content: String, exposed: Bool) {
+            let name = (path as NSString).lastPathComponent
+            if !path.split(separator: "/").contains(".."), let attached = attachments[name] {
+                used.insert(name)
+                readFiles.append(attached.standardizedFileURL)
+                return try readFile(attached, label: path, line: line)
+            }
+            let result = try readReferenced(path, base: baseDirectory, line: line)
+            readFiles.append(baseDirectory.appendingPathComponent(path).standardizedFileURL)
+            return result
+        }
         let parsed: OpenVPNConfigText
         do { parsed = try OpenVPNConfigText.parse(text) } catch let violation as RuleViolation { throw AppFailure(violation.message) }
         var blocks: [String: String] = [:]
@@ -102,9 +175,10 @@ enum OpenVPNImporter {
                     if name == "crl-verify" && directive.arguments.count > 1 {
                         throw AppFailure("crl-verify com diretório não é suportado.")
                     }
-                    let (content, exposed) = try readReferenced(path, base: baseDirectory, line: line.number)
+                    let (content, exposed) = try read(path, line: line.number)
                     try addBlock(name, content)
                     if exposed {
+                        if let last = readFiles.last { exposedFiles.append(last.resolvingSymlinksInPath().path) }
                         warnings.append("O arquivo original \(path) pode ser lido por outros usuários do Mac (recomendado: chmod 600). A cópia do app é privada.")
                     }
                 }
@@ -126,7 +200,7 @@ enum OpenVPNImporter {
             case "auth-user-pass":
                 if let file = directive.arguments.first {
                     guard file != "username-only" else { throw AppFailure("Perfis só com usuário (SSO) ainda não são suportados.") }
-                    let (content, _) = try readReferenced(file, base: baseDirectory, line: line.number)
+                    let (content, _) = try read(file, line: line.number)
                     credentials(from: content)
                     warnings.append("Usuário e senha lidos de \(file); a senha passa a ficar no Keychain.")
                 }
@@ -162,9 +236,13 @@ enum OpenVPNImporter {
         }
         let profile = OpenVPNProfile(directives: directives, blocks: order.map { OpenVPNBlock(tag: $0, content: blocks[$0]!) })
         do { try profile.check() } catch let violation as RuleViolation { throw AppFailure(violation.message) }
+        for unused in Set(attachments.keys).subtracting(used).sorted() {
+            warnings.append("O arquivo escolhido \(unused) não é usado pelo perfil e foi ignorado.")
+        }
         let name = suggestedName.lowercased() == "config" ? (parsed.viscosity["name"] ?? suggestedName) : suggestedName
         return OpenVPNImport(profile: profile, name: name, username: username, password: password, warnings: warnings,
-                             digestFix: OpenVPNCompatibility.digestFix(for: profile), source: source)
+                             digestFix: OpenVPNCompatibility.digestFix(for: profile), source: source,
+                             sourceFiles: readFiles, exposedOriginals: exposedFiles)
     }
 
     /// Only relative names inside the profile's folder: no absolute paths, no "..", and the
@@ -182,6 +260,13 @@ enum OpenVPNImporter {
         guard resolved.hasPrefix(root + "/") else {
             throw AppFailure("Linha \(line): \(path) aponta para fora da pasta do perfil.")
         }
+        return try readFile(URL(fileURLWithPath: resolved), label: path, line: line)
+    }
+
+    /// Reads one certificate/key file chosen or referenced by the user: regular, ≤ 64 KB, text.
+    static func readFile(_ url: URL, label path: String, line: Int) throws -> (content: String, exposed: Bool) {
+        guard let real = realpath(url.path, nil) else { throw AppFailure("Linha \(line): arquivo \(path) não encontrado.") }
+        let resolved = String(cString: real); free(real)
         let fd = open(resolved, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else { throw AppFailure("Linha \(line): não foi possível ler \(path).") }
         defer { close(fd) }
