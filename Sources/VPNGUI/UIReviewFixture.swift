@@ -20,7 +20,10 @@ enum UIReviewFixture {
             Connection(name: "Certificado pendente", server: "certificado.invalid", port: 443, authentication: .saml),
             Connection(name: "Autenticação recusada", server: "conta.invalid", port: 443, authentication: .saml),
             Connection(name: "Reconectando", server: "rede.invalid", port: 443, authentication: .saml)
-        ]
+        ] + ["Filial Curitiba", "Filial Recife", "Fornecedor Alfa", "Fornecedor Beta", "Homologação",
+             "Produção", "Suporte remoto", "Backup noturno"].enumerated().map { index, name in
+            Connection(name: name, server: "vpn\(index).exemplo.invalid", port: 443, authentication: .saml)
+        }
         try! store.save(SavedData(connections: profiles))
         let model = AppModel(store: store,
                              passwords: PasswordStore(service: "com.luiz.vpngui.ui-review.passwords"),

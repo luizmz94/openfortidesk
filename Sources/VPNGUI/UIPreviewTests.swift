@@ -38,7 +38,7 @@ enum UIPreviewTests {
             }
             for symbol in ["lock.trianglebadge.exclamationmark", "person.crop.circle.badge.exclamationmark", "person.crop.circle.badge.xmark",
                            "network.badge.shield.half.filled", "text.alignleft", "folder.badge.questionmark", "sidebar.left",
-                           "bolt.fill", "stop.fill", "play.fill", "macwindow", "gearshape", "power", "terminal", "shippingbox"] {
+                           "bolt.fill", "stop.fill", "macwindow", "gearshape", "power", "terminal", "shippingbox"] {
                 try require(NSImage(systemSymbolName: symbol, accessibilityDescription: nil) != nil, "SF Symbol inexistente: \(symbol)")
             }
         }
@@ -72,7 +72,10 @@ enum UIPreviewTests {
                 Connection(name: "Laboratório", server: "lab-b.invalid", port: 8443, username: "", authentication: .saml),
                 Connection(name: "Data center", server: "dc.invalid", port: 443, username: "ops",
                            trustedCertificate: String(repeating: "ab", count: 32)),
-            ]
+            ] + ["Filial Curitiba", "Filial Recife", "Fornecedor Alfa", "Fornecedor Beta", "Homologação",
+                 "Produção", "Suporte remoto", "Backup noturno", "Parceiro Gama"].enumerated().map { index, name in
+                Connection(name: name, server: "vpn\(index).exemplo.invalid", port: 443, username: "ana")
+            }
             created += connections.map(\.id)
             try store.save(SavedData(connections: connections))
             let model = AppModel(store: store, passwords: passwords, service: HelperTests.readyService())

@@ -84,7 +84,7 @@ struct MenuBarView: View {
             let duplicated = menuBar.duplicatedNames
             ScrollView(.vertical) {
                 VStack(spacing: 2) {
-                    ForEach(model.data.connections) { connection in
+                    ForEach(model.sortedConnections) { connection in
                         MenuBarRow(connection: connection, session: model.manager.session(connection.id),
                                    showsServer: duplicated.contains(connection.name.lowercased()), menuBar: menuBar)
                     }
@@ -212,6 +212,7 @@ struct MenuBarRow: View {
         HStack(alignment: .center, spacing: 10) {
             StatusSymbol(symbol: Self.symbol(session.state), tone: session.state.tone,
                          pulsing: session.state.inProgress, size: 14)
+            ProtocolIcon(kind: connection.kind, size: 18)
             VStack(alignment: .leading, spacing: 2) {
                 Text(connection.name).font(.body.weight(.medium)).lineLimit(2).truncationMode(.middle)
                 if showsServer {

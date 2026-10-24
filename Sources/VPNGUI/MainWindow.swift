@@ -11,6 +11,9 @@ struct MainView: View {
     @State private var pendingImport: OpenVPNImport?
     @ObservedObject private var service: ServiceController
     @State private var deleting: Connection?
+    @State private var query = ""
+    @State private var rowHeight: CGFloat = 0
+    @State private var sidebarHeight: CGFloat = 0
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -116,17 +119,40 @@ struct MainView: View {
 
     // MARK: Sidebar
 
+    /// The search field only appears once the list no longer fits (and stays while it filters).
+    private var showsSearch: Bool {
+        !query.isEmpty || ConnectionSearch.overflows(count: model.data.connections.count,
+                                                     rowHeight: rowHeight, available: sidebarHeight)
+    }
+
     private var sidebar: some View {
-        List(selection: $selected) {
-            ForEach(model.data.connections) { connection in
-                let session = model.manager.session(connection.id)
-                ConnectionRow(connection: connection, session: session, model: model,
-                              showsServer: true, edit: { editing = connection })
-                    .tag(connection.id)
-                    .contextMenu { contextMenu(for: connection, session: session) }
+        VStack(spacing: 0) {
+            if showsSearch {
+                SidebarSearchField(text: $query)
+                    .padding(.horizontal, 10).padding(.top, 6).padding(.bottom, 4)
+                    .transition(.opacity)
+            }
+            List(selection: $selected) {
+                ForEach(model.sortedConnections.filter { ConnectionSearch.matches($0, query) }) { connection in
+                    let session = model.manager.session(connection.id)
+                    ConnectionRow(connection: connection, session: session, model: model,
+                                  showsServer: true, edit: { editing = connection })
+                        .background(GeometryReader { Color.clear.preference(key: SidebarRowHeight.self, value: $0.size.height) })
+                        .tag(connection.id)
+                        .contextMenu { contextMenu(for: connection, session: session) }
+                }
+            }
+            .listStyle(.sidebar)
+            .overlay {
+                if !query.isEmpty && !model.data.connections.contains(where: { ConnectionSearch.matches($0, query) }) {
+                    Text("Nenhuma conexão encontrada").font(.callout).foregroundStyle(.secondary)
+                }
             }
         }
-        .listStyle(.sidebar)
+        .background(GeometryReader { Color.clear.preference(key: SidebarHeight.self, value: $0.size.height) })
+        .onPreferenceChange(SidebarRowHeight.self) { if $0 > 0 { rowHeight = $0 } }
+        .onPreferenceChange(SidebarHeight.self) { sidebarHeight = $0 }
+        .animation(Motion.state(reduceMotion), value: showsSearch)
         .onDeleteCommand {
             guard let connection = model.data.connections.first(where: { $0.id == selected }),
                   !model.manager.session(connection.id).state.active else { return }
@@ -182,6 +208,60 @@ struct MainView: View {
     }
 }
 
+// MARK: - Sidebar search
+
+enum ConnectionSearch {
+    /// Name, server and protocol, ignoring case and accents.
+    static func matches(_ connection: Connection, _ query: String) -> Bool {
+        let terms = query.split(whereSeparator: \.isWhitespace)
+        guard !terms.isEmpty else { return true }
+        let haystack = [connection.name, connection.endpoint, connection.kind.title].joined(separator: " ")
+        return terms.allSatisfy { haystack.range(of: $0, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
+    }
+
+    /// Whether the rows need more height than the sidebar has (the list would scroll).
+    /// `rowHeight` is the measured row content; the list adds its own insets around it.
+    static func overflows(count: Int, rowHeight: CGFloat, available: CGFloat) -> Bool {
+        guard rowHeight > 0, available > 0 else { return false }
+        return CGFloat(count) * (rowHeight + rowInsets) + listInsets > available
+    }
+    static let rowInsets: CGFloat = 8
+    static let listInsets: CGFloat = 20
+}
+
+private struct SidebarRowHeight: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+private struct SidebarHeight: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+struct SidebarSearchField: View {
+    @Binding var text: String
+    @FocusState private var focused: Bool
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary).accessibilityHidden(true)
+            TextField("Buscar conexões", text: $text)
+                .textFieldStyle(.plain)
+                .focused($focused)
+                .onExitCommand { text = "" }
+            if !text.isEmpty {
+                Button { text = ""; focused = true } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .help("Limpar busca")
+                    .accessibilityLabel("Limpar busca")
+            }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(0.06)))
+    }
+}
+
 // MARK: - Sidebar row
 
 struct ConnectionRow: View {
@@ -208,6 +288,7 @@ struct ConnectionRow: View {
         HStack(spacing: 10) {
             StatusSymbol(symbol: session.state.symbol, tone: session.state.tone,
                          pulsing: session.state.inProgress, size: 14)
+            ProtocolIcon(kind: connection.kind, size: 18)
             VStack(alignment: .leading, spacing: 2) {
                 Text(connection.name).font(.body.weight(.medium)).lineLimit(1).truncationMode(.tail)
                 Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
@@ -235,7 +316,7 @@ struct ConnectionRow: View {
     @ViewBuilder private var trailing: some View {
         if hovering && action.enabled {
             Button(action: perform) {
-                Image(systemName: action == .disconnect ? "stop.fill" : action == .review ? "person.crop.circle.badge.exclamationmark" : "play.fill")
+                Image(systemName: action == .disconnect ? "stop.fill" : action == .review ? "person.crop.circle.badge.exclamationmark" : "bolt.fill")
                     .font(.system(size: 10, weight: .bold))
                     .frame(width: 22, height: 22)
             }
@@ -289,7 +370,9 @@ struct ConnectionDetail: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            scrollingContent
+            actions
+                .padding(.horizontal, 28).padding(.top, 22).padding(.bottom, 4)
+            content
             ClientCredit(kind: connection.kind.runtime, version: service.status?.runtime(connection.kind.runtime)?.version)
                 .padding(.horizontal, 28).padding(.bottom, 10).padding(.top, 2)
         }
@@ -309,19 +392,15 @@ struct ConnectionDetail: View {
         }
     }
 
-    private var scrollingContent: some View {
-        GeometryReader { geometry in
-            ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 18) {
-                    actions
-                    notices
-                    facts
-                    logs
-                }
-                .padding(.horizontal, 28).padding(.top, 22).padding(.bottom, 24)
-                .frame(maxWidth: .infinity, minHeight: geometry.size.height, alignment: .topLeading)
-            }
+    /// Fixed layout: only the log console scrolls, and it takes whatever height is left.
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            notices
+            facts
+            logs
         }
+        .padding(.horizontal, 28).padding(.top, 14).padding(.bottom, 24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .windowBackgroundColor))
         .animation(Motion.state(reduceMotion), value: session.state)
         .animation(Motion.state(reduceMotion), value: session.suggestedCertificate)
@@ -348,19 +427,24 @@ struct ConnectionDetail: View {
 
 
     private var actions: some View {
-        GlassGroup(spacing: 10) {
-            HStack(spacing: 10) {
-                primaryButton
-                Button(action: edit) { Label("Editar…", systemImage: "pencil") }
-                    .adaptiveButtonStyle()
-                    .disabled(session.state.active)
-                    .help(session.state.active ? "Desconecte antes de editar" : "Editar esta conexão")
-                Button(role: .destructive, action: delete) { Label("Excluir…", systemImage: "trash") }
-                    .adaptiveButtonStyle()
-                    .disabled(session.state.active)
-                    .help(session.state.active ? "Desconecte antes de excluir" : "Excluir esta conexão")
+        HStack(spacing: 10) {
+            GlassGroup(spacing: 10) {
+                HStack(spacing: 10) {
+                    primaryButton
+                    Button(action: edit) { Label("Editar", systemImage: "pencil") }
+                        .adaptiveButtonStyle()
+                        .disabled(session.state.active)
+                        .help(session.state.active ? "Desconecte antes de editar" : "Editar esta conexão")
+                    Button(role: .destructive, action: delete) { Label("Excluir", systemImage: "trash") }
+                        .adaptiveButtonStyle()
+                        .disabled(session.state.active)
+                        .help(session.state.active ? "Desconecte antes de excluir" : "Excluir esta conexão")
+                }
+                .controlSize(.large)
             }
-            .controlSize(.large)
+            Spacer(minLength: 8)
+            ProtocolIcon(kind: connection.kind, size: 28)
+                .help(connection.kind.title)
         }
     }
 
@@ -519,6 +603,15 @@ struct ConnectionDetail: View {
                         .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                 }
                 Spacer()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(session.logs.joined(separator: "\n"), forType: .string)
+                } label: { Label("Copiar", systemImage: "doc.on.doc") }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .help("Copiar os logs desta conexão")
+                    .accessibilityLabel("Copiar os logs desta conexão")
+                    .disabled(session.logs.isEmpty)
                 Button { session.clearLogs() } label: { Label("Limpar", systemImage: "trash") }
                     .buttonStyle(.borderless)
                     .controlSize(.small)
@@ -527,8 +620,9 @@ struct ConnectionDetail: View {
                     .disabled(session.logs.isEmpty)
             }
             LogConsole(lines: session.logs)
-                .frame(minHeight: 120, maxHeight: .infinity)
+                .frame(minHeight: 80, maxHeight: .infinity)
         }
+        .layoutPriority(-1)
     }
 }
 

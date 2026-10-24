@@ -8,6 +8,17 @@ final class AppModel: ObservableObject {
     @Published var error: String?
     @Published var ready = false
     let manager = VPNManager()
+    /// Display order for the window and the menu bar: by name as Finder sorts it
+    /// (case, accents and numbers), then by server for equal names. Storage keeps its order.
+    var sortedConnections: [Connection] {
+        data.connections.sorted {
+            switch $0.name.localizedStandardCompare($1.name) {
+            case .orderedAscending: return true
+            case .orderedDescending: return false
+            case .orderedSame: return $0.endpoint.localizedStandardCompare($1.endpoint) == .orderedAscending
+            }
+        }
+    }
     let passwords: PasswordStore
     let cookies: SAMLCookieStore
     /// Privileged service (SMAppService + authenticated XPC); the manager's transport.
@@ -180,6 +191,35 @@ final class AppModel: ObservableObject {
     }
 }
 
+/// Who asked AppKit to quit, read from the quit Apple event being handled. Sair and ⌘Q
+/// call terminate directly and carry no event.
+struct QuitRequest: Equatable {
+    /// Bundle id of the sending app; nil for command-line tools (osascript, brew).
+    var senderBundleID: String?
+    /// Logout, restart or shutdown.
+    var hasSystemReason: Bool
+
+    /// Apps whose quit is always a user's or the system's request.
+    static let trustedSenders: Set<String> = ["com.apple.dock", "com.apple.loginwindow", "com.apple.ActivityMonitor",
+                                              "com.apple.systemevents", "com.apple.ScriptEditor2", "com.apple.Terminal"]
+
+    /// A quit sent by another app while only the menu bar icon is left: that is a
+    /// window-based auto quit, not the user leaving TunnelMac.
+    func isAutomaticQuit(menuBarIcon: Bool, windowVisible: Bool) -> Bool {
+        guard menuBarIcon, !windowVisible, !hasSystemReason, let senderBundleID else { return false }
+        return !Self.trustedSenders.contains(senderBundleID)
+    }
+
+    @MainActor static func current() -> QuitRequest? {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent,
+              event.eventClass == AEEventClass(kCoreEventClass), event.eventID == AEEventID(kAEQuitApplication),
+              let pid = event.attributeDescriptor(forKeyword: AEKeyword(keySenderPIDAttr))?.int32Value,
+              pid != ProcessInfo.processInfo.processIdentifier else { return nil }
+        return QuitRequest(senderBundleID: NSRunningApplication(processIdentifier: pid)?.bundleIdentifier,
+                           hasSystemReason: event.paramDescriptor(forKeyword: AEKeyword(kAEQuitReason)) != nil)
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var model: AppModel?
@@ -203,8 +243,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         else { sender.orderOut(nil) }
         return false
     }
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply { terminationReply() }
-    func terminationReply() -> NSApplication.TerminateReply {
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        terminationReply(request: QuitRequest.current())
+    }
+    func terminationReply(request: QuitRequest? = nil) -> NSApplication.TerminateReply {
+        // Utilities that quit apps without windows (e.g. Vorssaint's auto quit) would take
+        // the menu bar icon with them; the user quits with Sair, ⌘Q, the Dock or a script.
+        if let request, let menuBar, request.isAutomaticQuit(menuBarIcon: menuBar.preferences.showMenuBarIcon,
+                                                              windowVisible: menuBar.mainWindow?.isVisible == true) {
+            return .terminateCancel
+        }
         guard let model, model.manager.anyActive else { return .terminateNow }
         if awaitingTermination { return .terminateLater }
         guard confirmTermination() else { return .terminateCancel }
@@ -255,7 +303,9 @@ struct VPNGUIApp: App {
         let updates = UpdateChecker.production(preferences: preferences)
         let menuBar = MenuBarCoordinator(model: model, preferences: preferences, updates: updates,
                                          loginItem: .production())
-        menuBar.enforceVisibility()
+        // NSApp does not exist yet inside App.init; with the menu bar icon off, applying the
+        // Dock policy here crashed at launch (0.3.0-rc.4 to 0.5.0). Apply it once AppKit runs.
+        DispatchQueue.main.async { menuBar.enforceVisibility() }
         if !MenuBarCoordinator.isLocalChecks && !UIReviewFixture.enabled {
             model.onUserConnect = { [weak updates] in updates?.checkIfDue() }
             // After the interface is ready; the request runs in the background.

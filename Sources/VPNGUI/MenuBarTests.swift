@@ -188,6 +188,43 @@ enum MenuBarTests {
             try require(tunnelReplies == [true] && !model.manager.anyActive, "Não saiu após a limpeza")
         }
 
+        test("Sair: com o ícone na barra, outro app não encerra o TunnelMac sem janela; Dock, sistema e scripts sim") {
+            let utility = QuitRequest(senderBundleID: "com.vorssaint.utils", hasSystemReason: false)
+            try require(utility.isAutomaticQuit(menuBarIcon: true, windowVisible: false), "Auto quit de terceiro aceito")
+            try require(!utility.isAutomaticQuit(menuBarIcon: false, windowVisible: false), "Sem ícone na barra deveria sair")
+            try require(!utility.isAutomaticQuit(menuBarIcon: true, windowVisible: true), "Com janela visível deveria sair")
+            for request in [QuitRequest(senderBundleID: "com.apple.dock", hasSystemReason: false),
+                            QuitRequest(senderBundleID: nil, hasSystemReason: false),
+                            QuitRequest(senderBundleID: "com.vorssaint.utils", hasSystemReason: true)] {
+                try require(!request.isAutomaticQuit(menuBarIcon: true, windowVisible: false), "Pedido legítimo recusado: \(request)")
+            }
+            let (model, _) = try makeModel(root, names: ["A"])
+            let delegate = AppDelegate()
+            let menuBar = MenuBarCoordinator(model: model)
+            menuBar.preferences.showMenuBarIcon = true
+            delegate.attach(model: model, menuBar: menuBar)
+            try require(delegate.terminationReply(request: utility) == .terminateCancel, "Auto quit encerrou o app")
+            try require(delegate.terminationReply(request: nil) == .terminateNow, "Sair/⌘Q não encerrou")
+        }
+
+        test("Ordem: conexões em ordem alfabética na janela e no menu, sem mudar o arquivo") {
+            let names = ["summit", "Cimed", "Écran", "Kyly", "VPN 10", "VPN 2", "Docol"]
+            let (model, _) = try makeModel(root, names: names)
+            try require(model.sortedConnections.map(\.name) == ["Cimed", "Docol", "Écran", "Kyly", "summit", "VPN 2", "VPN 10"],
+                        "Ordem inesperada: \(model.sortedConnections.map(\.name))")
+            try require(model.data.connections.map(\.name) == names, "A ordem salva mudou")
+        }
+
+        test("Busca: nome, servidor e protocolo sem acento; o campo só aparece quando a lista rola") {
+            let connection = Connection(name: "Escritório São Paulo", server: "vpn.exemplo.invalid", port: 443)
+            try require(ConnectionSearch.matches(connection, "escritorio sao"), "Acentos/maiúsculas não ignorados")
+            try require(ConnectionSearch.matches(connection, "exemplo") && ConnectionSearch.matches(connection, "  "), "Servidor ou busca vazia")
+            try require(!ConnectionSearch.matches(connection, "summit"), "Filtro aceitou outra conexão")
+            try require(!ConnectionSearch.overflows(count: 6, rowHeight: 40, available: 500), "Lista curta mostrou a busca")
+            try require(ConnectionSearch.overflows(count: 14, rowHeight: 40, available: 500), "Lista longa sem busca")
+            try require(!ConnectionSearch.overflows(count: 50, rowHeight: 0, available: 500), "Sem medida mostrou a busca")
+        }
+
         test("Janela: fechar só oculta, não encerra sessões, e reabrir reaproveita a mesma janela") {
             let (model, connections) = try makeModel(root, names: ["A"])
             let menuBar = MenuBarCoordinator(model: model)

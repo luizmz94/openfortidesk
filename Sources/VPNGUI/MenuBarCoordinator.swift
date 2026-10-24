@@ -93,7 +93,7 @@ final class MenuBarCoordinator: ObservableObject {
     /// SwiftUI's openWindow(id: "settings"), captured by any view that has it.
     var openSettingsFallback: (() -> Void)?
     var activateApp: () -> Void = { NSApplication.shared.activate(ignoringOtherApps: true) }
-    var setActivationPolicy: (NSApplication.ActivationPolicy) -> Void = { _ = NSApp.setActivationPolicy($0) }
+    var setActivationPolicy: (NSApplication.ActivationPolicy) -> Void = { _ = NSApp?.setActivationPolicy($0) }
     private var observers = Set<AnyCancellable>()
     private var sessionObservers: [AnyCancellable] = []
     private var settingsCloseObserver: NSObjectProtocol?
